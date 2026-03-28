@@ -1,0 +1,9 @@
+# AML Explanation Engine — Dependencies
+# Install with: pip install -r requirements.txt
+
+pandas
+openpyxl                 # Required for pd.read_excel (.xlsx support)
+huggingface-hub
+google-generativeai      # Gemini backend (MODEL_BACKEND=gemini)
+llama-cpp-python         # Local LLM backend (MODEL_BACKEND=local_llm)
+python-dotenv            # Loads .env into environment variables

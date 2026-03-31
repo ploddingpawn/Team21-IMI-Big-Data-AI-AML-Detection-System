@@ -71,6 +71,99 @@ TYPOLOGY_LABELS = {
     "if_score_layering":         "Layering & Fund Movement (ATYPICAL-007/008, WIRE-006..010)",
 }
 
+# Relevant Merchant Category Codes 
+aml_relevant_mcc = {
+    # --- Luxury / High-Value Goods ---
+    5094: "Precious Stones and Metals, Watches and Jewelry",
+    5944: "Clock, Jewelry, Watch and Silverware Stores",
+    5681: "Furriers and Fur Shops",
+    5971: "Art Dealers and Galleries",
+    5972: "Stamp and Coin Stores",
+    5309: "Duty Free Stores",
+    5311: "Department Stores",
+    5399: "Miscellaneous General Merchandise Stores",
+    5999: "Miscellaneous and Specialty Retail Stores",
+
+    # --- Cash / Financial / Quasi-Cash ---
+    6010: "Manual Cash Disbursements",
+    6011: "Automated Cash Disbursements (ATM)",
+    6012: "Financial Institution Merchandise and Services",
+    6050: "Quasi Cash – Financial Institution",
+    6051: "Quasi Cash – Merchant",
+
+    # --- Money Transfer / Stored Value ---
+    4829: "Wire Transfer Money Orders",
+    6530: "Stored Value Load – Merchant",
+    6535: "Value Purchase – Financial Institution",
+    6536: "MoneySend Intracountry",
+    6537: "MoneySend Intercountry",
+    6538: "MoneySend Funding",
+    6539: "Funding Transaction",
+    6540: "Point of Interaction Funding Transactions",
+
+    # --- Gambling / Betting ---
+    7800: "Government-Owned Lottery",
+    7801: "Licensed Online Casinos",
+    7802: "Horse/Dog Racing",
+    7995: "Gambling Transactions",
+
+    # --- Pawn / Secondary Market ---
+    5933: "Pawn Shops",
+    5931: "Second Hand Stores",
+    5932: "Antique Shops",
+
+    # --- Travel (Layering / Movement Risk) ---
+    3000: "Airlines (General Category)",
+    3351: "Car Rental Agencies",
+    3501: "Hotels, Motels, Resorts",
+    7011: "Lodging Services",
+    4722: "Travel Agencies and Tour Operators",
+
+    # --- High-Risk Retail / Portable Value ---
+    5948: "Leather Goods and Luggage Stores",
+    5946: "Camera and Photographic Supply Stores",
+    5732: "Electronics Stores",
+    5045: "Computers and Software",
+    5942: "Book Stores (potential layering via resale)",
+
+    # --- Digital Goods / Remote Transactions ---
+    5815: "Digital Goods – Books, Movies, Music",
+    5816: "Digital Goods – Games",
+    5817: "Digital Goods – Applications",
+    5818: "Digital Goods – Multi-Category",
+
+    # --- Direct Marketing / Obfuscation Channels ---
+    5961: "Mail Order Houses",
+    5962: "Direct Marketing – Travel",
+    5963: "Door-to-Door Sales",
+    5964: "Catalog Merchants",
+    5965: "Combination Catalog and Retail",
+    5966: "Outbound Telemarketing",
+    5967: "Inbound Telemarketing",
+    5968: "Subscription Merchants",
+    5969: "Other Direct Marketing",
+
+    # --- Alcohol / Controlled Goods ---
+    5921: "Liquor Stores",
+    5813: "Bars and Nightclubs",
+
+    # --- Financial / Securities ---
+    6211: "Securities Brokers and Dealers",
+
+    # --- Insurance (possible layering) ---
+    6300: "Insurance Sales and Premiums",
+
+    # --- Government / Payments (monitoring relevance) ---
+    9211: "Court Costs",
+    9222: "Fines",
+    9311: "Tax Payments",
+
+    # --- Misc Services (behavioral indicators) ---
+    7276: "Tax Preparation Services",
+    7277: "Counseling Services",
+    7399: "Business Services Not Elsewhere Classified"
+}
+
 
 # ---------------------------------------------------------------------------
 # Rule-based hard flags

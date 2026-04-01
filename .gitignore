@@ -5,7 +5,7 @@
 # --- Virtual Environment ---
 aml/
 
-# --- Secrets (never commit) ---
+# --- Secrets ---
 .env
 
 # --- Python ---
@@ -20,7 +20,8 @@ build/
 
 # --- Runtime Output Files ---
 *.csv
-!AML_indicator_DB.csv
+~$*
+!AML-indicator-DB.csv
 model_output_explanations*.csv
 model_output_explanations_checkpoint.csv
 

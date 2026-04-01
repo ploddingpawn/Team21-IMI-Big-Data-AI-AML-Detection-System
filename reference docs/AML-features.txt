@@ -1,0 +1,1140 @@
+AML Typology Feature Reference
+Isolation Forest — TYPOLOGY_FEATURE_PATTERNS
+What each feature pattern is capturing, mapped to AML-indicator-DB.xlsx
+
+Overview
+The typology-specific Isolation Forest ensemble trains one unsupervised model per AML typology.
+Each model receives a curated feature set — the TYPOLOGY_FEATURE_PATTERNS — derived
+directly from the AML-indicator-DB.xlsx indicator catalogue. This document explains what each
+feature is measuring and which AML indicator it operationalises.
+Five typologies are modelled:
+• 1. Structuring & Layering — threshold avoidance and rapid fund velocity
+• 2. Behavioural & Profile Anomalies — activity inconsistent with KYC profile
+• 3. Trade-Based ML & Shell Entities — business volume far exceeding declared activity
+• 4. Cross-Border & Geographic Risk — transactions with high-risk jurisdictions
+• 5. Human Trafficking — MCC-level card and transfer patterns linked to exploitation
+
+1. Structuring & Layering
+This typology targets deliberate avoidance of currency-reporting thresholds (STRUCT-001..009)
+combined with rapid pass-through of funds (ATYPICAL-006..008). The two previously separate
+typologies — Structuring and Layering — are merged here because both share the same core
+signals: unusual transaction sizing and high fund velocity.
+
+1.1 Threshold Avoidance
+These features detect cash or transaction amounts engineered to stay below regulatory reporting
+triggers (typically $10,000 CAD).
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+count_near_10k
+
+STRUCT-003
+
+Number of transactions between $9,000 and $9,999
+— the most overt near-threshold band.
+
+count_very_near_10k
+
+STRUCT-003
+
+Transactions in a tighter band immediately below
+$10K, capturing the most deliberate avoidance.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+count_below_10k
+
+STRUCT-001
+
+Total count of transactions under $10K, providing
+volume context for the threshold behaviour.
+
+ratio_below_10k
+
+STRUCT-001
+
+Proportion of all transactions that fall below $10K; a
+high ratio flags systematic splitting, not isolated
+incidents.
+
+cash_struct_count
+
+STRUCT-001
+
+Count of ABM (cash) deposits below $10K. Cashspecific signal because ABM channel identifies
+physical currency deposits.
+
+1.2 Round-Amount Patterns
+Structured payments and layering often involve round-figure transactions that look like controlled
+fund movement rather than organic commerce.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+count_round_100
+
+PROF-007
+
+Number of transactions that are exact multiples of
+$100. Round amounts in retail contexts are
+statistically rare and suggest deliberate sizing.
+
+ratio_round_100
+
+PROF-007
+
+Share of all transactions that are $100-rounded. A
+high ratio makes the pattern systemic rather than
+coincidental.
+
+count_round_1000
+
+PROF-007
+
+Number of transactions in exact $1,000 increments.
+Larger round amounts are a particularly strong
+structuring signal.
+
+ratio_round_1000
+
+PROF-007
+
+Proportion of $1,000-rounded transactions across the
+observation window.
+
+1.3 Same-Day / Rapid Pass-Through
+Funds that arrive and depart the same day suggest the account is being used as a conduit rather
+than for genuine banking activity.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+flow_through_ratio
+
+ATYPICAL-007/008
+
+Ratio of minimum(total inflow, total outflow) to total
+inflow. A value near 1 means almost everything that
+comes in goes straight back out — the defining
+signature of a pass-through account.
+
+1.4 Transaction Velocity
+High frequency of transactions in a short period is the core STRUCT-006 signal — layering
+generates many small movements to obscure the audit trail.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+transactions_per_active_day
+
+STRUCT-006
+
+Average daily transaction count on days the
+account is active. High values indicate burst
+activity inconsistent with normal account use.
+
+volume_per_day
+
+STRUCT-006
+
+Total transaction volume divided by the
+observation window in days. Captures sustained
+high-throughput even when individual transactions
+are small.
+
+1.5 Location Hopping
+Using ATMs or transaction points across multiple cities and provinces is a BEHAV-001 signal,
+indicating deliberate geographic dispersal to avoid pattern detection at a single branch.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+unique_cities
+
+BEHAV-001
+
+Number of distinct cities where the customer
+transacted. Multi-city ABM use is a primary human
+trafficking and structuring signal.
+
+unique_provinces
+
+BEHAV-001
+
+Number of distinct provinces spanned. Crossprovincial activity raises the geographic risk further.
+
+1.6 Channel Volume — Rapid Fund Movement
+The total counts and sums by payment channel provide the raw throughput context for structuring
+and layering. Large or frequent EFT/EMT/wire transactions alongside ABM cash point to rapid,
+multi-channel fund movement (ATYPICAL-007, PROF-006).
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+count_abm / sum_abm
+
+STRUCT-001
+
+ABM transaction count and total value. High ABM
+volume anchors the cash-structuring signal.
+
+count_eft / sum_eft
+
+ATYPICAL-007
+
+EFT count and value. Immediate EFT outflows
+following cash deposits flag rapid pass-through
+layering.
+
+count_emt / sum_emt
+
+ATYPICAL-007
+
+EMT (e-transfer) count and value. Fast person-toperson transfers are a low-oversight layering channel.
+
+count_wire / sum_wire
+
+PROF-006
+
+Wire count and total. Large wires move money rapidly
+and across borders, consistent with large-scale
+layering.
+
+count_cheque
+
+STRUCT-009
+
+Cheque volume. Cheques can be used to layer funds
+while avoiding electronic audit trails.
+
+2. Behavioural & Profile Anomalies
+This typology captures activity that is inconsistent with what would be expected given a customer's
+declared KYC profile — occupation, income, account history, and prior behaviour. It consolidates
+
+the former money-mule and profile-mismatch typologies, since both target PROF and ACCT
+indicators.
+
+2.1 Spending vs Income Mismatch
+Living beyond one's means is a defining AML indicator (PROF-002, PROF-005). These features
+measure the gap between what flows out and what the customer's profile would predict as income.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+spending_to_income_ratio
+
+PROF-002/005
+
+Total debits divided by estimated or declared income.
+Values significantly above 1.0 indicate spending that
+cannot be explained by legitimate income.
+
+income_vol_ratio
+
+PROF-001
+
+Transaction volume relative to expected account
+activity established at onboarding. Captures accounts
+that dramatically exceed their projected usage.
+
+2.2 Sudden Changes in Activity
+Abrupt shifts in transaction patterns — not just high volume — are the key PROF-010 and ACCT004 signals. A previously quiet account that suddenly processes large flows is anomalous even if
+the absolute values are not extreme.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+monthly_volume_cv
+
+PROF-010/ACCT004
+
+Coefficient of variation of monthly transaction volume.
+High CV means the customer has months of very
+different activity levels — sudden spikes or drops.
+
+monthly_txn_count_std
+
+ACCT-002
+
+Standard deviation of the monthly transaction count.
+Complements volume CV by capturing erratic
+transaction frequency independent of amount.
+
+amount_cv
+
+PROF-008
+
+Coefficient of variation of individual transaction
+amounts. High CV means transaction sizes are highly
+irregular, inconsistent with a predictable income-andspend pattern.
+
+std_transaction_amount
+
+PROF-008
+
+Standard deviation of transaction amounts in absolute
+terms. Provides scale-sensitive context alongside the
+ratio-based CV.
+
+2.3 Transaction Size Context
+The distribution of transaction amounts — maximum, average — helps profile whether a customer's
+transactions are typical for their stated financial situation.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+max_transaction_amount
+
+PROF-008
+
+Largest single transaction. Unusually large one-off
+transactions relative to the customer's normal activity
+are a profile mismatch signal.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+avg_transaction_amount
+
+PROF-008
+
+Mean transaction size. Very high or very low
+averages relative to peer cohorts flag atypical
+transaction sizing.
+
+2.4 Channel Use Patterns
+Money mules and profile mismatches often use an unusual mix of payment channels, either highly
+concentrated in one channel or spanning all channels in ways inconsistent with their declared
+purpose.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+channel_diversity
+
+ACCT-002
+
+Count of distinct payment channels used (ABM,
+EFT, EMT, wire, card, cheque). Very low or very
+high diversity can both be anomalous depending on
+the customer type.
+
+channel_concentration_hhi
+
+ACCT-002
+
+Herfindahl-Hirschman Index of channel use. A value
+near 1 means the customer is overwhelmingly
+concentrated in one channel — unusual for most
+legitimate customers.
+
+count_card / sum_card
+
+ACCT-003
+
+Card transaction count and total. A sudden surge in
+card usage is the ACCT-003 indicator — particularly
+relevant for accounts that previously transacted
+primarily via other channels.
+
+2.5 Overall Volume and Activity Window
+Raw throughput and account tenure contextualise whether the transaction volume is plausible for
+the customer's profile.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+transaction_count_total
+
+PROF-003
+
+Total number of transactions in the observation
+window. Compared against geographic and
+demographic norms to detect outliers.
+
+net_flow
+
+PROF-001
+
+Total inflow minus total outflow. A near-zero net flow
+on a high-volume account is a strong pass-through or
+mule signal.
+
+active_days
+
+ACCT-004
+
+Number of days with at least one transaction. Low
+active days relative to time span indicates burst
+activity — not continuous organic use.
+
+time_span_days
+
+ACCT-001
+
+Observation window length. Provides the denominator
+for velocity calculations and tenure context.
+
+customer_tenure_days
+
+ACCT-001
+
+Days since account opening. New accounts with high
+activity are disproportionately associated with moneymule and fraud typologies.
+
+2.6 Customer Demographics
+Demographic attributes help calibrate whether behaviour is expected for this type of customer and
+flag known high-risk profile combinations.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+is_individual
+
+PROF-002
+
+Binary flag: personal vs business account. Individuals
+and businesses have different baseline behaviours;
+the model learns different anomaly thresholds for
+each.
+
+age
+
+PROF-002
+
+Customer age. Very young or elderly customers with
+large, complex transactions are disproportionately
+targeted for exploitation.
+
+occupation_risk_high
+
+PROF-002
+
+Flag for occupations with elevated AML exposure
+(e.g. cash-intensive businesses, politically exposed
+roles). Amplifies other signals when present.
+
+3. Trade-Based ML & Shell Entities
+This typology targets businesses whose financial flows are inconsistent with their declared
+commercial activity (PML-TBML-02..08, PROF-004). It also captures gatekeeper pass-through via
+GATE-001 — accounts used by professionals (lawyers, accountants, realtors) as conduits for client
+funds.
+
+3.1 Volume vs Declared Business Activity
+The foundational trade-based ML signal: a business transacts far more than its declared sales
+revenue or industry norms would suggest.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+volume_to_sales_ratio
+
+PROF-004/PMLTBML-05
+
+Total transaction volume divided by the customer's
+declared annual sales. A ratio well above 1 means the
+business is moving more money than it claims to earn
+— the core TBML signal.
+
+inflow_per_day
+
+PML-TBML-04
+
+Average daily inflow. Sudden large inflows that are
+inconsistent with the business's normal operating
+rhythm flag the PML-TBML-04 sudden-spike indicator.
+
+total_inflow
+
+PML-TBML-04
+
+Cumulative inflow over the observation window. High
+totals relative to declared business size confirm the
+volume mismatch.
+
+3.2 Industry and Entity Risk
+Certain industries and entity structures carry elevated inherent TBML risk regardless of transaction
+patterns.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+industry_risk_high
+
+PML-TBML-02
+
+Flag for high-risk industry codes (e.g. import/export,
+precious metals, real estate, currency exchange).
+Sector deviation — a business whose transactions
+don't match its stated sector — is PML-TBML-02.
+
+is_business
+
+PROF-004
+
+Binary flag: business account. All trade-shell signals
+are amplified for business customers; individual
+customers are downweighted in this typology.
+
+employee_count
+
+Shell signal
+
+Number of employees on record. High transaction
+volumes combined with very few employees is a
+classic shell company indicator — maximum revenue,
+minimal operating footprint.
+
+3.3 Pass-Through / Gatekeeper
+Gatekeepers — lawyers, notaries, accountants — legitimately hold client funds, but an account
+used purely as a conduit with no economic retention is anomalous (GATE-001).
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+flow_through_ratio
+
+GATE-001
+
+As in structuring, this ratio near 1 means funds enter
+and exit without being retained. For business
+accounts this is the primary gatekeeper signal.
+
+3.4 EFT Inflow Spikes
+PML-TBML-04 specifically calls out sudden large EFT inflows. These are captured from the raw
+EFT transaction file rather than derived features, giving the model access to the direct signal.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+eft_credit_sum
+
+PML-TBML-04
+
+Total EFT credit (inflow) received. High values relative
+to declared sales are the clearest TBML-04 signal.
+
+eft_credit_count
+
+PML-TBML-04
+
+Number of EFT credit transactions. Frequent large
+inflows are more anomalous than a single payment.
+
+sum_eft / count_eft
+
+PML-TBML-04
+
+Broader EFT totals across debit and credit, providing
+context for the credit-specific features above.
+
+3.5 Wire Activity
+High-value wires to multiple counterparties (PML-TBML-03) indicate a business distributing funds
+widely — potentially integrating layered proceeds.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+sum_wire
+
+PML-TBML-03
+
+Total wire transfer value. Large wire totals relative to
+declared business income flag illicit integration.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+count_wire
+
+PML-TBML-03
+
+Number of wire transfers. Many wires to different
+parties operationalises the 'large number of entities'
+signal in PML-TBML-03.
+
+has_wire
+
+PML-TBML-03
+
+Binary flag: does the customer use wires at all? For
+low-revenue businesses, any wire activity is
+anomalous.
+
+has_eft
+
+PML-TBML-04
+
+Binary flag: does the customer use EFT?
+Complements has_wire for channel-presence
+detection.
+
+3.6 Round-Amount Invoices
+PML-TBML-08 highlights round-figure payments typical of fictitious invoicing — a common
+mechanism to move funds under the cover of trade documents.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+ratio_round_1000
+
+PML-TBML-08
+
+Proportion of transactions in exact $1,000 increments.
+For business accounts, this proxies for round-figure
+invoice payments (the indicator references ~$50K
+increments but the pattern manifests across round
+amounts generally).
+
+count_round_1000
+
+PML-TBML-08
+
+Absolute count of $1,000-rounded transactions.
+
+3.7 Spike Pattern Detection
+Beyond the total volume, the temporal distribution of transactions reveals whether inflows are
+consistently high or arrive as sudden, unexplained spikes.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+monthly_txn_cv
+
+PML-TBML-04
+
+Coefficient of variation of monthly transaction counts.
+A single month with dramatically elevated activity
+(high CV) is the spike signature of PML-TBML-04.
+
+4. Cross-Border & Geographic Risk
+This typology captures transactions with jurisdictions that carry elevated money laundering or
+terrorist financing risk (GEO-001..005) and wire transfer patterns inconsistent with the customer's
+financial profile (WIRE-008/010).
+
+4.1 High-Risk Jurisdiction Exposure
+Each feature below maps to a specific geographic risk category from the AML indicator database.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+drug_country_txn_count
+
+GEO-001
+
+Transaction count with drug-producing or
+drug-transit countries (e.g. Mexico,
+Colombia, Peru, Bolivia). Direct
+operationalisation of the narcotics-source
+jurisdiction indicator.
+
+high_risk_fatf_txn_count
+
+GEO-002/004
+
+Transactions with FATF blacklisted
+jurisdictions (North Korea, Iran, Myanmar).
+The most severe geographic risk tier.
+
+greylist_txn_count
+
+GEO-003
+
+Transactions with FATF greylisted countries
+— jurisdictions under increased monitoring.
+A softer but broader risk signal than the
+blacklist.
+
+offshore_center_txn_count
+
+GEO-003
+
+Transactions with known offshore financial
+centres (e.g. Cayman Islands, BVI,
+Panama). These jurisdictions are associated
+with secretive banking and layering.
+
+underground_banking_country_count
+
+GEO-003
+
+Count of jurisdictions known for
+underground banking networks (e.g. China,
+Hong Kong, Philippines). Captures the
+hawala and fei-ch'ien risk.
+
+4.2 International Activity Volume
+Beyond specific high-risk countries, the overall volume and frequency of cross-border transactions
+relative to the customer's profile is the GEO-005 signal.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+international_txn_count
+
+GEO-005
+
+Total number of transactions to or from foreign
+counterparties. Frequency of overseas transfers is the
+primary GEO-005 indicator.
+
+international_txn_sum
+
+GEO-005
+
+Total value of international transactions. Large crossborder volumes inconsistent with income or business
+size are anomalous.
+
+international_ratio
+
+GEO-005
+
+Proportion of all transactions that are cross-border. A
+high ratio means the customer's financial activity is
+predominantly international — unusual unless the
+profile supports it.
+
+unique_countries
+
+GEO-005
+
+Number of distinct countries transacted with. Wide
+geographic scatter is harder to explain through
+legitimate activity than a few recurring partners.
+
+has_any_high_risk_txn
+
+GEO-002/004
+
+Binary flag: at least one transaction with any high-risk
+jurisdiction. Ensures even single-transaction exposure
+is captured when volume-based features may be
+small.
+
+4.3 Western Union / Money Service Businesses
+
+Western Union and similar MSBs are inherently international and carry elevated risk due to limited
+AML oversight in many corridors.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+sum_westernunion
+
+GEO-005
+
+Total value sent via Western Union or equivalent
+MSBs. High values, especially to high-risk corridors,
+directly operationalise GEO-005.
+
+count_westernunion
+
+GEO-005
+
+Number of Western Union transactions. Frequent
+MSB use is anomalous for most retail banking
+profiles.
+
+has_western_union
+
+GEO-005
+
+Binary flag: any WU activity. Presence alone is an
+elevated-risk signal for customers with no declared
+cross-border activity in their KYC.
+
+4.4 Wire Transfer Patterns
+WIRE-008 and WIRE-010 target large-volume foreign wire transfers and wires involving multiple
+counterparties — both consistent with layering through cross-border channels.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+sum_wire
+
+WIRE-008
+
+Total wire value. Large foreign wires relative to the
+customer's income or declared business are the
+WIRE-008 signal.
+
+count_wire
+
+WIRE-010
+
+Wire transaction count. Multiple wires to different
+parties is the WIRE-010 indicator.
+
+card_unique_countries
+
+GEO-005
+
+Number of countries where the customer's card has
+been used at merchants. Card data now provides a
+direct geographic footprint beyond wire and EFT
+channels.
+
+5. Human Trafficking
+This typology operationalises the full HT-SEX-01..14 indicator set. Rather than relying on generic
+transaction aggregates, the features are built directly from Merchant Category Codes (MCCs) on
+card transactions and from the EFT/EMT transaction files, enabling precise detection of the
+spending patterns associated with sexual exploitation.
+
+5.1 After-Hours Spa, Massage & Escort Spend (HT-SEX-12)
+Card transactions at spa, massage, and personal care establishments during late-night or earlymorning hours are the strongest single indicator of commercial sexual exploitation revenue.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_adult_afterhours_count
+
+HT-SEX-12
+
+Number of card transactions at adult
+entertainment, spa, or massage MCCs (7297,
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+7298) outside normal business hours. This is the
+most specific HT card signal and is sourced
+directly from the card transaction file.
+
+card_afterhours_count
+
+HT-SEX-12
+
+Broader count of all card transactions occurring
+after hours, regardless of merchant category.
+Provides context for whether after-hours activity is
+general or concentrated in the adult-sector MCCs.
+
+night_transaction_ratio
+
+HT-SEX-12
+
+Proportion of all transactions (any channel)
+occurring at night. A high ratio across channels,
+not just card, reinforces the after-hours lifestyle
+pattern.
+
+weekend_ratio
+
+HT-SEX-12
+
+Proportion of transactions occurring on weekends.
+Trafficking operations tend to concentrate activity
+on weekends; a high ratio amplifies the after-hours
+signal.
+
+5.2 Multi-City ABM Cash Withdrawals (HT-SEX-07)
+Traffickers controlling victims across multiple locations need cash in each city. Multi-city ABM
+withdrawals at night are the clearest operational signal of this movement pattern.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+night_abm_count
+
+HT-SEX-07
+
+Count of ABM withdrawals occurring at night. Cash
+extracted late at night is the primary operational
+currency for trafficking.
+
+unique_cities
+
+HT-SEX-07/08
+
+Number of distinct cities where the customer
+transacted. Shared with the structuring typology but
+here interpreted as multi-city victim management or
+client servicing.
+
+unique_provinces
+
+HT-SEX-07/08
+
+Number of provinces spanned. Cross-provincial
+movement indicates inter-city trafficking routes.
+
+5.3 Accommodation Spend (HT-SEX-08)
+Hotels and short-term accommodation in cities other than the customer's residential city are used
+as working venues. Card spend at accommodation MCCs in non-residential locations is a direct
+proxy.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_accommodation_count
+
+HT-SEX-08
+
+Number of card transactions at hotel and
+accommodation MCCs (7011). High counts in
+combination with multi-city presence confirm the nonresidential venue pattern.
+
+card_accommodation_sum
+
+HT-SEX-08
+
+Total spend on accommodation. Repeated hotel
+stays represent both operational cost and a strong
+geographic displacement signal.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+ht_accommodation_sector
+
+HT-SEX-07
+
+Binary flag: is the customer's declared business in the
+accommodation or hospitality sector? Front
+businesses in this sector are commonly used to comingle trafficking proceeds.
+
+5.4 Luxury Spend vs Income (HT-SEX-03)
+Traffickers often display conspicuous luxury consumption — jewellery, high-end goods — that is
+inconsistent with declared income. Card MCCs for luxury retail combined with the income-tospending ratio surface this pattern.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_luxury_sum
+
+HT-SEX-03
+
+Total card spend at luxury MCCs (e.g. jewellers 5094,
+5944). High luxury spend relative to income is a
+defining HT-SEX-03 signal.
+
+card_luxury_count
+
+HT-SEX-03
+
+Number of luxury merchant transactions. Frequency
+distinguishes lifestyle spending from isolated
+purchases.
+
+spending_to_income_ratio
+
+HT-SEX-13
+
+Shared with the behavioural typology; here it proxies
+HT-SEX-13 — high-value transfers disproportionate
+to declared income, indicating unexplained wealth
+from trafficking proceeds.
+
+5.5 Travel to Source Countries (HT-SEX-10)
+Airfare and travel spend to known human trafficking source countries — those with high rates of
+trafficking outflows — indicates potential recruitment or victim transport.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_travel_sum
+
+HT-SEX-10
+
+Total card spend on travel MCCs (airlines 4511,
+travel agencies 4722). Large travel spend,
+especially to high-risk source countries, is the HTSEX-10 signal.
+
+card_travel_count
+
+HT-SEX-10
+
+Number of travel transactions. Frequent trips
+signal recurring movement, not one-time tourism.
+
+ht_source_country_txn_count
+
+HT-SEX-10
+
+Transactions (any channel) with known trafficking
+source countries. Built from a curated high-risk
+origin country list and sourced directly from the
+transaction files.
+
+sum_westernunion
+
+HT-SEX-10
+
+WU transfers to source countries are a common
+mechanism for paying recruiters or remitting
+proceeds to home jurisdictions.
+
+5.6 Victim Maintenance Spending (HT-SEX-04/05)
+
+Traffickers cover victims' day-to-day needs — food, parking, transport — as a means of maintaining
+control. These mundane spending categories become anomalous when concentrated, frequent,
+and paired with the other HT signals.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_parking_count
+
+HT-SEX-04
+
+Number of parking transactions (MCC 7523).
+Frequent parking charges across multiple cities
+indicate victim transit management rather than
+personal commuting.
+
+card_delivery_count
+
+HT-SEX-05
+
+Number of food delivery transactions (MCC 5814 and
+delivery apps). Regular food delivery to
+accommodation venues, especially after hours, is
+consistent with victim maintenance.
+
+5.7 Digital, Crypto & Gambling (HT-SEX-06)
+Virtual currency purchases and online gambling are used to launder trafficking proceeds and pay
+for digital advertising of services.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_digital_count
+
+HT-SEX-06
+
+Card transactions at digital goods, virtual currency,
+and online gambling MCCs (4816, 7995). These
+channels offer anonymity for both proceeds
+laundering and operational payments.
+
+5.8 Retail & Gift Card Purchases (HT-SEX-01/02)
+Gift cards and retail purchases (grocery, pharmacy) serve as untraceable payment instruments for
+both victim management and advertising on illicit platforms.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+card_retail_count
+
+HT-SEX-01/02
+
+Card transactions at retail and convenience MCCs
+(5411 grocery, 5912 pharmacy, 5310 discount). High
+volumes suggest bulk gift card or supply purchases
+associated with trafficking operations.
+
+5.9 Rental Payments via EMT / EFT (HT-SEX-14)
+Rent paid by e-transfer or EFT for apartments used as venues is a direct financial footprint of the
+trafficking operation. These payments are captured from the raw EMT and EFT files rather than
+from card data, ensuring no channel is missed.
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+emt_debit_count
+
+HT-SEX-14
+
+Number of EMT (e-transfer) debit outflows. Recurring
+EMT debits of consistent amounts correspond to
+rental and operational payments for trafficking
+venues.
+
+Feature Name
+
+AML Indicator
+
+What It Captures
+
+eft_debit_count
+
+HT-SEX-14
+
+Number of EFT debit outflows. EFT-based rental
+payments complement EMT and ensure coverage
+regardless of how the venue payment is structured.
+
+

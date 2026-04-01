@@ -191,7 +191,6 @@ aml_relevant_mcc = {
 
 # Indicator maps to associated MCC codes
 aml_indicator_to_mcc = {
-
     # --- High Value / Luxury Spending ---
     "ATYPICAL-001": [
         5094, 5944, 5681, 5971, 5972, 5309,
@@ -318,180 +317,434 @@ def _col(df: pd.DataFrame, name: str, default: float = 0.0) -> pd.Series:
 
 def rules_structuring_layering(df: pd.DataFrame) -> pd.Series:
     """
-    STRUCT-003:       $9,000–$9,999 transactions (CTR threshold avoidance)
-    STRUCT-003 (VH):  $9,800–$9,999 (very high confidence structuring)
-    STRUCT-006:       > 10 transactions per active day (velocity)
-    ATYPICAL-007/008: flow_through > 0.85 + volume > $50K (same-day turnover)
-    PROF-007:         > 60% round-number amounts and >= 20 transactions
+    STRUCT-001:   Sub-$10K cash deposits (count_below_10k, cash_struct_count, ratio_below_10k)
+    STRUCT-006:   Burst velocity — transactions_per_active_day + volume_per_day
+    ATYPICAL-006: Suspicious temporal pattern — night_transaction_ratio, weekend_ratio
+    ATYPICAL-007: Quick in-out / pass-through — flow_through_ratio + volume + EFT/EMT
+    BEHAV-001:    Location hopping — unique_cities, unique_provinces
+    PROF-006:     Large/rapid fund movement — total_volume vs income, volume_per_day
+    PROF-007:     Round-sum transactions — ratio_round_100, ratio_round_1000
     """
-    near  = _col(df, "count_near_10k")
-    vnear = _col(df, "count_very_near_10k")
-    rr    = _col(df, "ratio_round_100")
-    txn   = _col(df, "transaction_count_total")
-    ftr   = _col(df, "flow_through_ratio")
-    vol   = _col(df, "total_volume")
-    tpad  = _col(df, "transactions_per_active_day")
+    # ── STRUCT-001: cash structuring ─────────────────────────────────────────
+    below10k     = _col(df, "count_below_10k")
+    ratio_b10k   = _col(df, "ratio_below_10k")
+    cash_struct  = _col(df, "cash_struct_count")
 
-    s = (
-        np.where(near  >= 5, 0.30, np.where(near  >= 2, 0.15, 0.0)) +
-        np.where(vnear >= 3, 0.20, 0.0) +
-        np.where((rr > 0.80) & (txn >= 20), 0.15, np.where((rr > 0.60) & (txn >= 20), 0.08, 0.0)) +
-        np.where((ftr > 0.90) & (vol > 100_000), 0.35, np.where((ftr > 0.80) & (vol > 50_000), 0.18, 0.0)) +
-        np.where(tpad > 20, 0.15, np.where(tpad > 10, 0.08, 0.0))
+    s_struct001 = (
+        np.where(below10k >= 20, 0.20, np.where(below10k >= 10, 0.10, 0.0)) +
+        np.where((ratio_b10k > 0.90) & (below10k >= 10), 0.10, 0.0) +
+        np.where(cash_struct >= 10, 0.15, np.where(cash_struct >= 5, 0.07, 0.0))
     )
+
+    # ── STRUCT-006: short-period velocity ────────────────────────────────────
+    tpad   = _col(df, "transactions_per_active_day")
+    vpd    = _col(df, "volume_per_day")
+
+    s_struct006 = (
+        np.where(tpad > 20, 0.20, np.where(tpad > 10, 0.10, 0.0)) +
+        np.where(vpd > 5_000, 0.10, np.where(vpd > 2_000, 0.05, 0.0))
+    )
+
+    # ── ATYPICAL-006: temporal pattern ───────────────────────────────────────
+    night_r  = _col(df, "night_transaction_ratio")
+    wknd_r   = _col(df, "weekend_ratio")
+    txn      = _col(df, "transaction_count_total")
+
+    s_aty006 = (
+        np.where((night_r > 0.60) & (txn >= 20), 0.12, np.where(night_r > 0.40, 0.06, 0.0)) +
+        np.where((wknd_r > 0.70) & (txn >= 20), 0.10, 0.0)
+    )
+
+    # ── ATYPICAL-007: quick in-out / pass-through ─────────────────────────────
+    ftr  = _col(df, "flow_through_ratio")
+    vol  = _col(df, "total_volume")
+    ceft = _col(df, "count_eft")
+    cemt = _col(df, "count_emt")
+
+    s_aty007 = (
+        np.where((ftr > 0.95) & (vol > 100_000), 0.40,
+        np.where((ftr > 0.90) & (vol > 50_000),  0.25,
+        np.where((ftr > 0.80) & (vol > 20_000),  0.12, 0.0))) +
+        np.where((ceft + cemt > 20) & (ftr > 0.70), 0.10, 0.0)
+    )
+
+    # ── BEHAV-001: location hopping ──────────────────────────────────────────
+    cities = _col(df, "unique_cities")
+    provs  = _col(df, "unique_provinces")
+
+    s_behav001 = (
+        np.where(cities >= 5, 0.20, np.where(cities >= 3, 0.10, 0.0)) +
+        np.where(provs  >= 3, 0.10, np.where(provs  >= 2, 0.05, 0.0))
+    )
+
+    # ── PROF-006: large/rapid fund movement ──────────────────────────────────
+    income = _col(df, "income")
+    spi    = _col(df, "spending_to_income_ratio")
+
+    s_prof006 = (
+        np.where((vol > 500_000) & (income > 0) & (spi > 5), 0.30,
+        np.where((vol > 200_000) & (income > 0) & (spi > 3), 0.18, 0.0)) +
+        np.where(vpd > 10_000, 0.15, np.where(vpd > 3_000, 0.08, 0.0))
+    )
+
+    # ── PROF-007: round sums ─────────────────────────────────────────────────
+    rr    = _col(df, "ratio_round_100")
+    rr1k  = _col(df, "ratio_round_1000")
+    cr1k  = _col(df, "count_round_1000")
+
+    s_prof007 = (
+        np.where((rr > 0.80) & (txn >= 20), 0.15, np.where((rr > 0.60) & (txn >= 20), 0.08, 0.0)) +
+        np.where((rr1k > 0.40) & (txn >= 10), 0.10, 0.0) +
+        np.where(cr1k >= 5, 0.05, 0.0)
+    )
+
+    s = s_struct001 + s_struct006 + s_aty006 + s_aty007 + s_behav001 + s_prof006 + s_prof007
     return pd.Series(s, index=df.index).clip(0, 1)
 
 
 def rules_behavioural_profile(df: pd.DataFrame) -> pd.Series:
     """
-    PROF-002: Spending > 5x declared income (financial standing inconsistency)
-    PROF-004: Volume > 10x declared sales (business activity mismatch)
-    PROF-005: Total volume > 20x income (living beyond means)
-    ACCT-003: Card spend > 50% of income (credit card usage surge)
+    ACCT-001:  Dormant activation — old account suddenly active
+    ACCT-002:  Periodic patterns — erratic monthly frequency
+    ACCT-003:  Credit surge — high card spend relative to total volume/income
+    ACCT-004:  Abrupt change — high CV across volume and amounts
+    PROD-008:  Credit card abuse — very high card spend + luxury
+    PROF-001:  Activity vs expectation — income_vol_ratio, rapid new account
+    PROF-002:  Financial standing — spending > 5x income
+    PROF-005:  Living beyond means — spending > 3x income + luxury
+    PROF-008:  Transaction type/size atypical — amount_cv, max_amount
+    PROF-010:  Sudden change — monthly_volume_cv, monthly_txn_count_std
     """
-    income   = _col(df, "income")
-    outflow  = _col(df, "total_outflow")
-    spi      = _col(df, "spending_to_income_ratio")
-    sales    = _col(df, "sales")
-    vol      = _col(df, "total_volume")
-    vsr      = _col(df, "volume_to_sales_ratio")
-    ivr      = _col(df, "income_vol_ratio")
-    card_sum = _col(df, "sum_card")
+    income    = _col(df, "income")
+    outflow   = _col(df, "total_outflow")
+    spi       = _col(df, "spending_to_income_ratio")
+    vol       = _col(df, "total_volume")
+    ivr       = _col(df, "income_vol_ratio")
+    card_sum  = _col(df, "sum_card")
+    card_cnt  = _col(df, "count_card")
+    lux_sum   = _col(df, "card_luxury_sum")
+    lux_cnt   = _col(df, "card_luxury_count")
+    tenure    = _col(df, "customer_tenure_days")
+    tspan     = _col(df, "time_span_days")
+    active    = _col(df, "active_days")
+    mv_cv     = _col(df, "monthly_volume_cv")
+    mt_std    = _col(df, "monthly_txn_count_std")
+    amt_cv    = _col(df, "amount_cv")
+    std_amt   = _col(df, "std_transaction_amount")
+    max_amt   = _col(df, "max_transaction_amount")
+    avg_amt   = _col(df, "avg_transaction_amount")
+    txn       = _col(df, "transaction_count_total")
+    is_ind    = _col(df, "is_individual")
+    hhi       = _col(df, "channel_concentration_hhi")
 
-    s = (
-        np.where((income > 0) & (outflow > 10_000) & (spi > 10), 0.35,
-        np.where((income > 0) & (outflow > 10_000) & (spi > 5),  0.18, 0.0)) +
-        np.where((sales > 0) & (vol > 50_000) & (vsr > 20), 0.30,
-        np.where((sales > 0) & (vol > 50_000) & (vsr > 10), 0.15, 0.0)) +
-        np.where((income > 0) & (ivr > 50), 0.15,
-        np.where((income > 0) & (ivr > 20), 0.08, 0.0)) +
-        np.where((income > 0) & (card_sum > income * 0.5) & (card_sum > 10_000), 0.10, 0.0)
+    # ── ACCT-001: dormant activation ─────────────────────────────────────────
+    s_acct001 = (
+        np.where((tenure > 365) & (tspan < 90)  & (vol > 10_000), 0.25, 0.0) +
+        np.where((tenure > 180) & (active < 14) & (vol >  5_000), 0.15, 0.0) +
+        np.where((mv_cv > 3.0)  & (tenure > 180), 0.12, 0.0)
     )
+
+    # ── ACCT-002: periodic/erratic patterns ──────────────────────────────────
+    s_acct002 = (
+        np.where(mt_std > 50, 0.12, 0.0) +
+        np.where((mv_cv > 2.0) & (active < tspan * 0.30), 0.15, 0.0) +
+        np.where((hhi > 0.85) & (mt_std > 20), 0.08, 0.0)
+    )
+
+    # ── ACCT-003: card usage surge (approx via volume/income ratios) ──────────
+    s_acct003 = (
+        np.where((card_cnt > 50) & (hhi > 0.60), 0.15, 0.0) +
+        np.where((income > 0) & (card_sum > income * 0.70) & (card_sum > 20_000), 0.15, 0.0) +
+        np.where((amt_cv > 2.0) & (card_cnt > 20), 0.08, 0.0)
+    )
+
+    # ── ACCT-004: abrupt change ───────────────────────────────────────────────
+    s_acct004 = (
+        np.where(mv_cv > 2.5, 0.15, 0.0) +
+        np.where(mt_std > 30, 0.10, 0.0) +
+        np.where(amt_cv > 3.0, 0.12, 0.0) +
+        np.where(std_amt > 5_000, 0.08, 0.0)
+    )
+
+    # ── PROD-008: credit card abuse ───────────────────────────────────────────
+    s_prod008 = (
+        np.where(card_sum > 50_000, 0.20, np.where(card_sum > 20_000, 0.10, 0.0)) +
+        np.where((lux_sum > 15_000) & ((income == 0) | (spi > 3)), 0.20, 0.0) +
+        np.where((lux_cnt >= 5) & (income > 0) & (lux_sum > income * 0.5), 0.10, 0.0)
+    )
+
+    # ── PROF-001: activity vs expectation ────────────────────────────────────
+    s_prof001 = (
+        np.where((income > 0) & (ivr > 50), 0.20, np.where((income > 0) & (ivr > 20), 0.10, 0.0)) +
+        np.where((vol > 100_000) & (tenure < 180), 0.15, 0.0)
+    )
+
+    # ── PROF-002: financial standing ─────────────────────────────────────────
+    s_prof002 = (
+        np.where((income > 0) & (outflow > 10_000) & (spi > 10), 0.35,
+        np.where((income > 0) & (outflow > 10_000) & (spi > 5),  0.18, 0.0))
+    )
+
+    # ── PROF-005: living beyond means ────────────────────────────────────────
+    s_prof005 = (
+        np.where((income > 0) & (spi > 5), 0.20, np.where((income > 0) & (spi > 3), 0.10, 0.0)) +
+        np.where((lux_sum > 5_000) & (spi > 2), 0.10, 0.0)
+    )
+
+    # ── PROF-008: transaction type/size atypical ──────────────────────────────
+    s_prof008 = (
+        np.where((amt_cv > 3.0) & (txn >= 20), 0.15, 0.0) +
+        np.where((max_amt > 50_000) & ((income == 0) | (max_amt > income * 2)), 0.20, 0.0) +
+        np.where((avg_amt > 10_000) & (is_ind == 1), 0.12, 0.0)
+    )
+
+    # ── PROF-010: sudden change ───────────────────────────────────────────────
+    s_prof010 = (
+        np.where(mv_cv > 3.0, 0.20, np.where(mv_cv > 2.0, 0.10, 0.0)) +
+        np.where((mt_std > 40) & (mv_cv > 1.5), 0.12, 0.0) +
+        np.where(amt_cv > 4.0, 0.10, 0.0)
+    )
+
+    s = (s_acct001 + s_acct002 + s_acct003 + s_acct004 + s_prod008
+         + s_prof001 + s_prof002 + s_prof005 + s_prof008 + s_prof010)
     return pd.Series(s, index=df.index).clip(0, 1)
 
 
 def rules_trade_shell(df: pd.DataFrame) -> pd.Series:
     """
-    PML-TBML-04: EFT credit inflow > $100K (sudden large electronic transfer)
-    WIRE-008:    Wire volume > $100K (volume mismatch for account type)
-    GATE-001:    Business flow-through > 0.90 with high volume (pass-through)
-    PML-TBML-08: > 40% round-$1000 amounts on business accounts
-    Shell signal: <= 2 employees + volume > 20x declared sales
+    GATE-001:     Business account used as pure pass-through conduit
+    PML-TBML-02:  Sector deviation — industry_risk_high + volume_to_sales
+    PML-TBML-03:  Counterparty risk — many wire/EFT counterparties
+    PML-TBML-04:  Volume spike — sudden large EFT credit inflow
+    PML-TBML-08:  Round-sum invoices — ratio_round_1000 on business accounts
+    PROF-004:     Business activity mismatch — volume vs declared sales + employees
     """
-    eft_cr = _col(df, "eft_credit_sum")
-    wire   = _col(df, "sum_wire")
-    ftr    = _col(df, "flow_through_ratio")
-    vol    = _col(df, "total_volume")
-    is_biz = _col(df, "is_business")
-    rr1k   = _col(df, "ratio_round_1000")
-    emp    = _col(df, "employee_count")
-    vsr    = _col(df, "volume_to_sales_ratio")
-    sales  = _col(df, "sales")
+    eft_cr   = _col(df, "eft_credit_sum")
+    eft_cnt  = _col(df, "count_eft")
+    wire     = _col(df, "sum_wire")
+    wire_cnt = _col(df, "count_wire")
+    ftr      = _col(df, "flow_through_ratio")
+    vol      = _col(df, "total_volume")
+    net_flow = _col(df, "net_flow")
+    is_biz   = _col(df, "is_business")
+    rr1k     = _col(df, "ratio_round_1000")
+    cr1k     = _col(df, "count_round_1000")
+    emp      = _col(df, "employee_count")
+    vsr      = _col(df, "volume_to_sales_ratio")
+    sales    = _col(df, "sales")
+    ind_risk = _col(df, "industry_risk_high")
+    mv_cv    = _col(df, "monthly_txn_cv")
+    inflow_d = _col(df, "inflow_per_day")
 
-    s = (
-        np.where(eft_cr > 500_000, 0.30, np.where(eft_cr > 100_000, 0.15, 0.0)) +
-        np.where(wire   > 500_000, 0.25, np.where(wire   > 100_000, 0.12, 0.0)) +
-        np.where((is_biz == 1) & (ftr > 0.90) & (vol > 100_000), 0.25,
-        np.where((is_biz == 1) & (ftr > 0.80) & (vol > 50_000),  0.12, 0.0)) +
-        np.where((is_biz == 1) & (rr1k > 0.60), 0.15,
-        np.where((is_biz == 1) & (rr1k > 0.40), 0.08, 0.0)) +
+    # ── GATE-001: pass-through / gatekeeper ──────────────────────────────────
+    s_gate001 = (
+        np.where((is_biz == 1) & (ftr > 0.92) & (vol > 200_000), 0.35,
+        np.where((is_biz == 1) & (ftr > 0.85) & (vol > 100_000), 0.20, 0.0)) +
+        np.where((vol > 100_000) & (net_flow.abs() < vol * 0.02), 0.15, 0.0)
+    )
+
+    # ── PML-TBML-02: sector deviation ────────────────────────────────────────
+    s_tbml02 = (
+        np.where((ind_risk == 1) & (vsr > 5), 0.25, np.where((ind_risk == 1) & (vsr > 2), 0.12, 0.0)) +
+        np.where((is_biz == 1) & (ind_risk == 1) & (wire_cnt > 5), 0.10, 0.0)
+    )
+
+    # ── PML-TBML-03: counterparty risk ───────────────────────────────────────
+    s_tbml03 = (
+        np.where((is_biz == 1) & (wire_cnt > 20), 0.25,
+        np.where((is_biz == 1) & (wire_cnt > 10), 0.12, 0.0)) +
+        np.where((is_biz == 1) & (eft_cnt > 50), 0.15, 0.0) +
+        np.where(wire > 500_000, 0.20, 0.0)
+    )
+
+    # ── PML-TBML-04: EFT volume spike ────────────────────────────────────────
+    s_tbml04 = (
+        np.where(eft_cr > 500_000, 0.35, np.where(eft_cr > 100_000, 0.18, 0.0)) +
+        np.where((mv_cv > 2.0) & (eft_cr > 50_000), 0.10, 0.0) +
+        np.where((is_biz == 1) & (inflow_d > 5_000), 0.10, 0.0)
+    )
+
+    # ── PML-TBML-08: round-sum invoices ──────────────────────────────────────
+    s_tbml08 = (
+        np.where((is_biz == 1) & (rr1k > 0.60), 0.20,
+        np.where((is_biz == 1) & (rr1k > 0.40), 0.10, 0.0)) +
+        np.where((is_biz == 1) & (cr1k >= 10), 0.10, 0.0)
+    )
+
+    # ── PROF-004: business activity mismatch ─────────────────────────────────
+    s_prof004 = (
+        np.where((sales > 0) & (vol > 50_000) & (vsr > 20), 0.30,
+        np.where((sales > 0) & (vol > 50_000) & (vsr > 10), 0.15, 0.0)) +
         np.where((is_biz == 1) & (emp <= 2) & (sales > 0) & (vsr > 20), 0.20, 0.0)
     )
+
+    s = s_gate001 + s_tbml02 + s_tbml03 + s_tbml04 + s_tbml08 + s_prof004
     return pd.Series(s, index=df.index).clip(0, 1)
 
 
 def rules_cross_border_geo(df: pd.DataFrame) -> pd.Series:
     """
-    GEO-002/004: Any FATF blacklist transaction — hard flag (KP, IR, MM)
-    GEO-001:     Drug-transit country transactions (MX, CO, PE, etc.)
-    GEO-003:     Greylist / offshore center exposure
-    GEO-005:     > 50% international transactions + >= 5 international txns
-    WU proxy:    WesternUnion volume as inherently international signal
-    WIRE-010:    High wire count (multiple counterparties)
+    GEO-001:   Drug-producing/transit jurisdiction transactions
+    GEO-002:   FATF blacklist transactions (highest severity)
+    GEO-003:   Greylist / offshore / underground banking exposure
+    GEO-004:   FATF non-cooperative — floor signal via has_any_high_risk_txn
+    GEO-005:   Frequent overseas transfers — ratio, count, WU, card countries
+    WIRE-008:  Wire volume mismatch vs income
+    WIRE-010:  Multiple wire counterparties
     """
-    fatf    = _col(df, "high_risk_fatf_txn_count")
-    drug    = _col(df, "drug_country_txn_count")
-    grey    = _col(df, "greylist_txn_count")
-    offshore= _col(df, "offshore_center_txn_count")
-    intl_r  = _col(df, "international_ratio")
-    intl_n  = _col(df, "international_txn_count")
-    wu      = _col(df, "sum_westernunion")
-    wire_n  = _col(df, "count_wire")
+    fatf     = _col(df, "high_risk_fatf_txn_count")
+    drug     = _col(df, "drug_country_txn_count")
+    grey     = _col(df, "greylist_txn_count")
+    offshore = _col(df, "offshore_center_txn_count")
+    ug_bank  = _col(df, "underground_banking_country_count")
+    any_hr   = _col(df, "has_any_high_risk_txn")
+    intl_r   = _col(df, "international_ratio")
+    intl_n   = _col(df, "international_txn_count")
+    u_ctry   = _col(df, "unique_countries")
+    wu_sum   = _col(df, "sum_westernunion")
+    wu_cnt   = _col(df, "count_westernunion")
+    card_c   = _col(df, "card_unique_countries")
+    wire_sum = _col(df, "sum_wire")
+    wire_n   = _col(df, "count_wire")
+    income   = _col(df, "income")
 
-    s = (
-        np.where(fatf    >= 3, 0.50, np.where(fatf    >= 1, 0.35, 0.0)) +
-        np.where(drug    >= 5, 0.20, np.where(drug    >= 1, 0.10, 0.0)) +
-        np.where(grey    >= 10, 0.15, np.where(grey   >= 3, 0.08, 0.0)) +
-        np.where(offshore >= 3, 0.15, np.where(offshore >= 1, 0.08, 0.0)) +
-        np.where((intl_r > 0.80) & (intl_n >= 10), 0.15,
-        np.where((intl_r > 0.50) & (intl_n >= 5),  0.08, 0.0)) +
-        np.where(wu > 10_000, 0.10, np.where(wu > 1_000, 0.05, 0.0)) +
-        np.where(wire_n >= 10, 0.10, np.where(wire_n >= 5, 0.05, 0.0))
+    # ── GEO-001: drug jurisdictions ───────────────────────────────────────────
+    s_geo001 = np.where(drug >= 5, 0.25, np.where(drug >= 1, 0.12, 0.0))
+
+    # ── GEO-002: FATF blacklist (highest single rule weight) ─────────────────
+    s_geo002 = np.where(fatf >= 3, 0.55, np.where(fatf >= 1, 0.40, 0.0))
+
+    # ── GEO-003: greylist / offshore / underground banking ────────────────────
+    s_geo003 = (
+        np.where(grey >= 10, 0.18, np.where(grey >= 3, 0.10, 0.0)) +
+        np.where(offshore >= 3, 0.18, np.where(offshore >= 1, 0.10, 0.0)) +
+        np.where(ug_bank >= 2, 0.10, 0.0)
     )
+
+    # ── GEO-004: any FATF risk floor ─────────────────────────────────────────
+    s_geo004 = np.where(any_hr == 1, 0.10, 0.0)
+
+    # ── GEO-005: frequent overseas transfers ──────────────────────────────────
+    s_geo005 = (
+        np.where((intl_r > 0.80) & (intl_n >= 10), 0.18,
+        np.where((intl_r > 0.50) & (intl_n >= 5),  0.10, 0.0)) +
+        np.where(u_ctry >= 5, 0.10, 0.0) +
+        np.where(wu_sum > 10_000, 0.12, np.where(wu_sum > 1_000, 0.06, 0.0)) +
+        np.where(wu_cnt >= 5, 0.08, 0.0) +
+        np.where(card_c >= 4, 0.08, 0.0)
+    )
+
+    # ── WIRE-008: wire volume mismatch ────────────────────────────────────────
+    s_wire008 = (
+        np.where(wire_sum > 500_000, 0.30, np.where(wire_sum > 100_000, 0.15, 0.0)) +
+        np.where((income > 0) & (wire_sum > income), 0.10, 0.0)
+    )
+
+    # ── WIRE-010: multiple wire counterparties ────────────────────────────────
+    s_wire010 = np.where(wire_n >= 15, 0.18, np.where(wire_n >= 8, 0.10, 0.0))
+
+    s = s_geo001 + s_geo002 + s_geo003 + s_geo004 + s_geo005 + s_wire008 + s_wire010
     return pd.Series(s, index=df.index).clip(0, 1)
 
 
 def rules_human_trafficking(df: pd.DataFrame) -> pd.Series:
     """
-    HT-SEX-01/02: High retail card + round amounts (gift card proxy)
-    HT-SEX-03:    Luxury spend inconsistent with income
-    HT-SEX-04/05: Parking + food delivery (victim maintenance pattern)
-    HT-SEX-07:    Multi-city ABM + night cash withdrawals
-    HT-SEX-08:    Accommodation card spend
-    HT-SEX-10:    Travel/airfare or source-country transactions
-    HT-SEX-12:    After-hours adult MCC card txns (7297/7298 — direct)
-    HT-SEX-13:    Total volume disproportionate to income
-    HT-SEX-14:    Regular EMT/EFT outgoing payments (rental pattern)
+    HT-SEX-01:  Rounded retail/gift card purchases
+    HT-SEX-02:  High-value convenience store purchases
+    HT-SEX-03:  Luxury spend vs income
+    HT-SEX-04:  Parking charges — victim transit
+    HT-SEX-05:  Food delivery — victim maintenance
+    HT-SEX-06:  Digital/crypto/gambling spend
+    HT-SEX-07:  Multi-city ABM + night cash withdrawals
+    HT-SEX-08:  Accommodation card spend
+    HT-SEX-10:  Airfare / travel to source countries
+    HT-SEX-12:  After-hours adult MCC transactions (direct: 7297/7298)
+    HT-SEX-13:  Disproportionate volume vs income
+    HT-SEX-14:  Recurring EMT/EFT outflows (rental/venue payments)
     """
-    retail   = _col(df, "card_retail_count")
-    rr       = _col(df, "ratio_round_100")
-    luxury   = _col(df, "card_luxury_sum")
-    income   = _col(df, "income")
-    spi      = _col(df, "spending_to_income_ratio")
-    cities   = _col(df, "unique_cities")
-    night_abm= _col(df, "night_abm_count")
-    accom    = _col(df, "card_accommodation_count")
-    travel   = _col(df, "card_travel_sum")
-    ht_src   = _col(df, "ht_source_country_txn_count")
-    adult_ah = _col(df, "card_adult_afterhours_count")
-    card_ah  = _col(df, "card_afterhours_count")
-    night_r  = _col(df, "night_transaction_ratio")
-    vol      = _col(df, "total_volume")
-    emt_d    = _col(df, "emt_debit_count")
-    eft_d    = _col(df, "eft_debit_count")
-    parking  = _col(df, "card_parking_count")
-    delivery = _col(df, "card_delivery_count")
-    txn      = _col(df, "transaction_count_total")
+    retail    = _col(df, "card_retail_count")
+    rr        = _col(df, "ratio_round_100")
+    avg_amt   = _col(df, "avg_transaction_amount")
+    lux_sum   = _col(df, "card_luxury_sum")
+    lux_cnt   = _col(df, "card_luxury_count")
+    income    = _col(df, "income")
+    spi       = _col(df, "spending_to_income_ratio")
+    parking   = _col(df, "card_parking_count")
+    delivery  = _col(df, "card_delivery_count")
+    digital   = _col(df, "card_digital_count")
+    cities    = _col(df, "unique_cities")
+    night_abm = _col(df, "night_abm_count")
+    accom_cnt = _col(df, "card_accommodation_count")
+    accom_sum = _col(df, "card_accommodation_sum")
+    travel    = _col(df, "card_travel_sum")
+    ht_src    = _col(df, "ht_source_country_txn_count")
+    wu_sum    = _col(df, "sum_westernunion")
+    adult_ah  = _col(df, "card_adult_afterhours_count")
+    card_ah   = _col(df, "card_afterhours_count")
+    night_r   = _col(df, "night_transaction_ratio")
+    vol       = _col(df, "total_volume")
+    emt_d     = _col(df, "emt_debit_count")
+    eft_d     = _col(df, "eft_debit_count")
+    txn       = _col(df, "transaction_count_total")
 
-    s = (
-        # HT-SEX-01/02
-        np.where((retail >= 10) & (rr > 0.50), 0.15,
-        np.where((retail >= 5)  & (rr > 0.50), 0.08, 0.0)) +
-        # HT-SEX-03
-        np.where((luxury > 10_000) & ((income == 0) | (spi > 3)), 0.25,
-        np.where((luxury > 5_000)  & ((income == 0) | (spi > 2)), 0.12, 0.0)) +
-        # HT-SEX-04/05
-        np.where((parking >= 20) & (delivery >= 20), 0.10,
-        np.where((parking >= 10) & (delivery >= 10), 0.05, 0.0)) +
-        # HT-SEX-07
-        np.where((cities >= 5) & (night_abm >= 5), 0.30,
-        np.where((cities >= 3) & (night_abm >= 3), 0.20,
-        np.where((cities >= 3) & (night_abm >= 1), 0.10, 0.0))) +
-        # HT-SEX-08
-        np.where(accom >= 5, 0.15, np.where(accom >= 3, 0.08, 0.0)) +
-        # HT-SEX-10
-        np.where((travel > 5_000) | (ht_src >= 5), 0.20,
-        np.where((travel > 2_000) | (ht_src >= 3), 0.10, 0.0)) +
-        # HT-SEX-12 — direct MCC signal prioritised, general fallback
-        np.where(adult_ah >= 3, 0.40,
-        np.where(adult_ah >= 1, 0.25,
-        np.where((card_ah >= 10) & (night_r > 0.40) & (txn >= 10), 0.10, 0.0))) +
-        # HT-SEX-13
-        np.where((income > 0) & (vol > 50_000) & (spi > 10), 0.15, 0.0) +
-        # HT-SEX-14
-        np.where((emt_d >= 8) | (eft_d >= 8), 0.15,
-        np.where((emt_d >= 4) | (eft_d >= 4), 0.08, 0.0))
+    # ── HT-SEX-01: rounded retail/gift card purchases ─────────────────────────
+    s_01 = np.where((retail >= 10) & (rr > 0.50), 0.18,
+           np.where((retail >= 5)  & (rr > 0.50), 0.10, 0.0))
+
+    # ── HT-SEX-02: high-value convenience store ───────────────────────────────
+    s_02 = np.where((retail >= 10) & (avg_amt > 200), 0.12, 0.0)
+
+    # ── HT-SEX-03: luxury spend vs income ────────────────────────────────────
+    s_03 = (
+        np.where((lux_sum > 10_000) & ((income == 0) | (spi > 3)), 0.28,
+        np.where((lux_sum >  5_000) & ((income == 0) | (spi > 2)), 0.15, 0.0)) +
+        np.where(lux_cnt >= 5, 0.08, 0.0)
     )
+
+    # ── HT-SEX-04: parking charges ────────────────────────────────────────────
+    s_04 = np.where((parking >= 20) & (cities >= 3), 0.15,
+           np.where(parking >= 10, 0.08, 0.0))
+
+    # ── HT-SEX-05: food delivery ──────────────────────────────────────────────
+    s_05 = np.where((delivery >= 20) & (accom_cnt >= 3), 0.15,
+           np.where(delivery >= 10, 0.08, 0.0))
+
+    # ── HT-SEX-06: digital / crypto / gambling ───────────────────────────────
+    s_06 = np.where(digital >= 5, 0.15, np.where(digital >= 2, 0.08, 0.0))
+
+    # ── HT-SEX-07: multi-city ABM + night cash ────────────────────────────────
+    s_07 = np.where((cities >= 5) & (night_abm >= 5), 0.35,
+           np.where((cities >= 3) & (night_abm >= 3), 0.22,
+           np.where((cities >= 3) & (night_abm >= 1), 0.12, 0.0)))
+
+    # ── HT-SEX-08: accommodation spend ───────────────────────────────────────
+    s_08 = (
+        np.where(accom_cnt >= 5, 0.18, np.where(accom_cnt >= 3, 0.12, 0.0)) +
+        np.where((accom_cnt >= 3) & (cities >= 2), 0.0, 0.0) +  # cities captured in s_07
+        np.where(accom_sum > 2_000, 0.08, 0.0)
+    )
+
+    # ── HT-SEX-10: travel / source countries ─────────────────────────────────
+    s_10 = (
+        np.where(ht_src >= 5, 0.25, np.where(ht_src >= 3, 0.15, 0.0)) +
+        np.where(travel > 5_000, 0.22, np.where(travel > 2_000, 0.12, 0.0)) +
+        np.where((wu_sum > 2_000) & (ht_src >= 1), 0.10, 0.0)
+    )
+
+    # ── HT-SEX-12: after-hours adult MCC ─────────────────────────────────────
+    s_12 = np.where(adult_ah >= 3, 0.45,
+           np.where(adult_ah >= 1, 0.28,
+           np.where((card_ah >= 10) & (night_r > 0.40) & (txn >= 10), 0.12, 0.0)))
+
+    # ── HT-SEX-13: total volume vs income ────────────────────────────────────
+    s_13 = np.where((income > 0) & (vol > 50_000) & (spi > 10), 0.18,
+           np.where((income > 0) & (vol > 200_000) & (spi > 5), 0.12, 0.0))
+
+    # ── HT-SEX-14: recurring EMT/EFT (venue payments) ────────────────────────
+    max_eft_emt = np.maximum(emt_d.values, eft_d.values)
+    s_14 = np.where(max_eft_emt >= 8, 0.18, np.where(max_eft_emt >= 4, 0.10, 0.0))
+
+    s = s_01 + s_02 + s_03 + s_04 + s_05 + s_06 + s_07 + s_08 + s_10 + s_12 + s_13 + s_14
     return pd.Series(s, index=df.index).clip(0, 1)
 
 

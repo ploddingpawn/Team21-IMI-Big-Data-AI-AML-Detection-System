@@ -101,6 +101,22 @@ TYPOLOGY_FEATURE_PATTERNS = {
         "count_wire",
         "sum_wire",                    # PROF-006: large rapid wire movement
         "count_cheque",
+        # ── New from updated 01_feature_engineering ──────────────────────
+        "max_days_between_txns",                      # ACCT-001: gap signals dormancy then sudden reactivation
+        "total_volume_vs_ind_median",                 # STRUCT-006/PROF-006: volume vs individual peer median
+        "total_volume_vs_bus_median",                 # STRUCT-006/PROF-006: volume vs business peer median
+        "total_volume_above_ind_p90",                 # binary: exceeds 90th pct individual peer volume
+        "total_volume_above_bus_p90",                 # binary: exceeds 90th pct business peer volume
+        "transactions_per_active_day_vs_ind_median",  # STRUCT-006: velocity vs individual peer
+        "transactions_per_active_day_vs_bus_median",  # STRUCT-006: velocity vs business peer
+        "transactions_per_active_day_above_ind_p90",
+        "transactions_per_active_day_above_bus_p90",
+        "flow_through_ratio_vs_ind_median",           # ATYPICAL-007/008: pass-through vs peer baseline
+        "flow_through_ratio_vs_bus_median",
+        "outflow_per_day",                               # STRUCT-006: daily outflow velocity
+        "sum_cheque",                                    # STRUCT-009: cheque volume (cheque structuring pattern)
+        "has_emt",                                       # ATYPICAL-007: EMT channel presence flag
+        "structuring_layering_risk",                  # typology composite — direct signal for this IF
     ],
 
     # ── 2. Behavioural & Profile Anomalies ────────────────────────────────
@@ -134,6 +150,30 @@ TYPOLOGY_FEATURE_PATTERNS = {
         "is_individual",
         "age",
         "occupation_risk_high",        # PROF-002: occupation gap
+        # ── New from updated 01_feature_engineering ──────────────────────
+        "max_days_between_txns",              # ACCT-001: dormant account reactivation signal
+        "total_outflow_vs_ind_median",        # PROF-002/005: outflow vs individual peer
+        "total_outflow_vs_bus_median",        # PROF-002/005: outflow vs business peer
+        "total_outflow_above_ind_p90",        # binary: individual outflow outlier
+        "total_outflow_above_bus_p90",        # binary: business outflow outlier
+        "total_inflow_vs_ind_median",         # PROF-001: inflow vs individual peer expectation
+        "total_inflow_vs_bus_median",
+        "total_inflow_above_ind_p90",
+        "total_inflow_above_bus_p90",
+        "card_volume_30d",                    # ACCT-003: 30-day card volume (surge detection)
+        "card_volume_90d",                    # ACCT-003: 90-day card volume
+        "card_30d_ratio",                     # ACCT-003: recent share of lifetime card spend
+        "card_90d_ratio",
+        "card_ecommerce_count",               # ACCT-003: e-commerce usage surge
+        "card_ecommerce_sum",
+        "evening_transaction_ratio",          # ATYPICAL-006: unusual hour concentration
+        "total_volume",                                  # PROF-001: absolute activity level
+        "total_outflow",                                 # PROF-005: absolute spending level
+        "transaction_count_debit",                       # PROF-008: debit transaction count
+        "transaction_count_credit",                      # PROF-001: credit transaction count
+        "median_transaction_amount",                     # PROF-008: typical transaction size
+        "behavioural_profile_risk",           # typology composite — direct signal for this IF
+        "card_30d_ratio",                      # ACCT-003: Jan card share of lifetime spend
     ],
 
     # ── 3. Trade-Based ML & Shell Entities ────────────────────────────────
@@ -162,6 +202,18 @@ TYPOLOGY_FEATURE_PATTERNS = {
         "has_eft",
         "inflow_per_day",
         "total_inflow",
+        # ── New from updated 01_feature_engineering ──────────────────────
+        "eft_debit_count",                    # GATE-001: EFT outflow (pass-through debit side)
+        "eft_debit_sum",
+        "total_inflow_vs_bus_median",         # PML-TBML-04: inflow spike vs business peer
+        "total_inflow_above_bus_p90",         # binary: business inflow outlier
+        "total_volume_vs_bus_median",         # PROF-004: overall volume vs business peer
+        "total_volume_above_bus_p90",
+        "flow_through_ratio_vs_bus_median",   # GATE-001: pass-through vs business peer baseline
+        "avg_txn_per_city",                   # PML-TBML-03: counterparty proxy via geographic spread
+        "flow_through_ratio_above_ind_p90",              # GATE-001: individual pass-through outlier flag
+        "flow_through_ratio_above_bus_p90",              # GATE-001: business pass-through outlier flag
+        "trade_shell_risk",                   # typology composite — direct signal for this IF
     ],
 
     # ── 4. Cross-Border & Geographic Risk ─────────────────────────────────
@@ -189,6 +241,10 @@ TYPOLOGY_FEATURE_PATTERNS = {
         "sum_wire",                         # WIRE-008: large wire to foreign accounts
         "count_wire",                       # WIRE-010: multiple wire parties
         "card_unique_countries",            # GEO-005: card merchant countries (direct)
+        # ── New from updated 01_feature_engineering ──────────────────────
+        "card_unique_cities",                # GEO-005: card spend city spread (non-residential pattern)
+        "ht_source_country_txn_count",       # GEO-005 / HT-SEX-10: txns to high-risk source countries
+        "cross_border_geo_risk",             # typology composite — direct signal for this IF
     ],
 
     # ── 5. Human Trafficking ──────────────────────────────────────────────
@@ -227,6 +283,22 @@ TYPOLOGY_FEATURE_PATTERNS = {
         "ht_accommodation_sector",     # HT-SEX-07: business in accommodation/hospitality
         "is_individual",
         "weekend_ratio",               # HT-SEX-12: weekend activity concentration
+        "card_retail_sum",                   # HT-SEX-01/02: retail spend total (gift card proxy)
+        "card_digital_sum",                  # HT-SEX-06: digital/crypto/gambling spend total
+        "card_unique_cities",                # HT-SEX-07/08: card spend city spread
+        "emt_credit_count",                  # HT-SEX-09/14: incoming EMT (victim payment receipt signal)
+        "emt_credit_sum",
+        "emt_debit_sum",                     # HT-SEX-14: outgoing rental/maintenance sum
+        "eft_debit_sum",                     # HT-SEX-14: EFT maintenance payment sum
+        "avg_txn_per_city",                  # HT-SEX-07: activity spread across cities
+        "card_volume_30d",                   # HT-SEX-12: recent card surge (operational tempo)
+        "card_30d_ratio",
+        "overall_typology_max_risk",         # cross-typology: any typology elevated (HT often co-occurs)
+        "typology_breadth",                  # number of typologies > 0.3 (multi-typology red flag)
+        "night_transaction_count",                       # HT-SEX-12: absolute night txn count
+        "evening_transaction_count",                     # HT-SEX-12: evening activity count
+        "weekend_transaction_count",                     # HT-SEX-12: weekend activity count
+        "human_trafficking_risk",            # typology composite — direct signal for this IF
     ],
 }
 
@@ -251,6 +323,10 @@ LOG_TRANSFORM_PATTERNS = [
     "total_", "amount", "txn_count", "net_flow",
     "international_txn", "drug_country", "greylist", "offshore",
     "employee", "night_", "ht_source", "card_",
+    "max_days_between",
+    "avg_txn_per",
+    "_vs_ind_median",
+    "_vs_bus_median",
 ]
 
 
@@ -359,10 +435,10 @@ def print_validation(typology, scores, labels):
 def verify_grounding(typology, scores, df, top_n=50):
     key_features = {
         "structuring_layering": ["count_near_10k", "flow_through_ratio", "ratio_round_100", "unique_cities"],
-        "behavioural_profile":  ["spending_to_income_ratio", "monthly_volume_cv", "amount_cv", "income_vol_ratio"],
-        "trade_shell":          ["volume_to_sales_ratio", "industry_risk_high", "flow_through_ratio", "employee_count"],
+        "behavioural_profile":  ["spending_to_income_ratio", "monthly_volume_cv", "card_30d_ratio", "income_vol_ratio"],
+        "trade_shell":          ["volume_to_sales_ratio", "trade_shell_risk", "flow_through_ratio", "employee_count"],
         "cross_border_geo":     ["high_risk_fatf_txn_count", "international_ratio", "sum_westernunion", "drug_country_txn_count"],
-        "human_trafficking":    ["card_adult_afterhours_count", "unique_cities", "ht_source_country_txn_count", "card_luxury_sum"],
+        "human_trafficking":    ["card_adult_afterhours_count", "human_trafficking_risk", "ht_source_country_txn_count", "card_luxury_sum"],
     }.get(typology, [])
 
     top_idx = np.argsort(-scores)[:top_n]

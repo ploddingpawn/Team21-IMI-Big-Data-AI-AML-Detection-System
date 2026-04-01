@@ -436,12 +436,15 @@ def rules_behavioural_profile(df: pd.DataFrame) -> pd.Series:
     txn       = _col(df, "transaction_count_total")
     is_ind    = _col(df, "is_individual")
     hhi       = _col(df, "channel_concentration_hhi")
+    max_gap   = _col(df, "max_days_between_txns")
+    card_30d  = _col(df, "card_volume_30d")
+    card_90d  = _col(df, "card_volume_90d")
 
     # ── ACCT-001: dormant activation ─────────────────────────────────────────
     s_acct001 = (
-        np.where((tenure > 365) & (tspan < 90)  & (vol > 10_000), 0.25, 0.0) +
-        np.where((tenure > 180) & (active < 14) & (vol >  5_000), 0.15, 0.0) +
-        np.where((mv_cv > 3.0)  & (tenure > 180), 0.12, 0.0)
+        np.where((max_gap > 180) & (vol > 10_000), 0.25,
+        np.where((max_gap > 90)  & (vol >  5_000), 0.15, 0.0)) +
+        np.where((mv_cv > 3.0)   & (tenure > 180), 0.12, 0.0)
     )
 
     # ── ACCT-002: periodic/erratic patterns ──────────────────────────────────
@@ -451,9 +454,11 @@ def rules_behavioural_profile(df: pd.DataFrame) -> pd.Series:
         np.where((hhi > 0.85) & (mt_std > 20), 0.08, 0.0)
     )
 
-    # ── ACCT-003: card usage surge (approx via volume/income ratios) ──────────
+    # ── ACCT-003: card usage surge ───────────────────────────────────────────
+    surge_ratio = np.where(card_90d > 0, card_30d / card_90d, 0.0)
     s_acct003 = (
-        np.where((card_cnt > 50) & (hhi > 0.60), 0.15, 0.0) +
+        np.where((surge_ratio > 0.75) & (card_30d > 10_000), 0.20,
+        np.where((surge_ratio > 0.50) & (card_30d >  5_000), 0.10, 0.0)) +
         np.where((income > 0) & (card_sum > income * 0.70) & (card_sum > 20_000), 0.15, 0.0) +
         np.where((amt_cv > 2.0) & (card_cnt > 20), 0.08, 0.0)
     )

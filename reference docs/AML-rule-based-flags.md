@@ -150,11 +150,11 @@ This typology detects activity that is inconsistent with a customer's declared K
 
 | Feature | Condition | Contribution | Rationale |
 |---|---|---|---|
-| `customer_tenure_days` | > 365 AND `time_span_days` < 90 AND `total_volume` > $10K | +0.25 | Old account with all activity compressed into a short recent window — strong dormancy-to-active signal |
-| `customer_tenure_days` | > 180 AND `active_days` < 14 AND `total_volume` > $5K | +0.15 | Mature account that transacted on fewer than 14 distinct days despite significant volume |
+| `max_days_between_txns` | > 180 AND `total_volume` > $10K | +0.25 | An account transacting with a >6 month gap before surging is a high-confidence dormancy activation signal |
+| `max_days_between_txns` | > 90 AND `total_volume` > $5K | +0.15 | Quarter-long dormancy followed by significant volume |
 | `monthly_volume_cv` | > 3.0 AND `customer_tenure_days` > 180 | +0.12 | Very high month-to-month volume variability on a mature account suggests sudden activation after dormancy |
 
-**Note:** True dormancy requires a prior-period activity flag (e.g., zero transactions in months 1–6 followed by high activity in month 7). This approximation uses `time_span_days` (length of observed activity window) relative to `customer_tenure_days` (total account age) as a proxy.
+**Note:** `max_days_between_txns` measures the longest gap between any consecutive transactions, catching accounts that activate, go dormant, and then reactivate natively. It is unknown if the data passed in reflects the entire history of the customer or just a subset of transactions, so dormancy from account creation date was not used. 
 
 ---
 
@@ -176,11 +176,12 @@ This typology detects activity that is inconsistent with a customer's declared K
 
 | Feature | Condition | Contribution | Rationale |
 |---|---|---|---|
-| `count_card` | > 50 AND `channel_concentration_hhi` > 0.60 | +0.15 | High card transaction count with heavy channel concentration — card-dominant activity atypical of diverse banking use |
-| `sum_card` | > $20K AND `income` > 0 AND `sum_card` > `income` × 0.70 | +0.15 | Card spend materially exceeding income — financial standing inconsistency via card channel |
+| `card_volume_30d` / `card_volume_90d` | > 0.75 AND `card_volume_30d` > $10K | +0.20 | More than 75% of quarter-level card spend occurred in the last 30 days — defining a sudden credit surge regardless of customer baseline wealth |
+| `card_volume_30d` / `card_volume_90d` | > 0.50 AND `card_volume_30d` > $5K | +0.10 | Half of quarter-level spend concentrated in last month |
+| `sum_card` | > $20K AND `income` > 0 AND `sum_card` > `income` × 0.70 | +0.15 | Fallback: Card spend materially exceeding income — financial standing inconsistency via card channel |
 | `amount_cv` | > 2.0 AND `count_card` > 20 | +0.08 | High variability in transaction amounts alongside frequent card use — consistent with surging, erratic card activity |
 
-**Note:** A "sudden increase" ideally requires time-split features (e.g., recent 30-day card spend vs. prior 90-day baseline). These are not in the current feature matrix, so the rule approximates the signal using card volume and income ratios.
+**Note:** A "sudden increase" is captured using comparing the 30-day recent spend ratio directly against the 90-day spend ratio. This normalises against customer wealth variations effectively.
 
 ---
 

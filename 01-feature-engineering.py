@@ -223,6 +223,13 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
     f["last_transaction_date"]  = pd.to_datetime(f["last_transaction_date"])
     f["time_span_days"]         = (f["last_transaction_date"] - f["first_transaction_date"]).dt.days + 1
 
+    # ACCT-001: max days between consecutive transactions
+    txn_sorted = txn[["customer_id", "transaction_datetime"]].dropna().sort_values(["customer_id", "transaction_datetime"])
+    txn_sorted["days_between"] = txn_sorted.groupby("customer_id")["transaction_datetime"].diff().dt.days
+    max_gap = txn_sorted.groupby("customer_id")["days_between"].max().reset_index(name="max_days_between_txns")
+    f = f.merge(max_gap, on="customer_id", how="left")
+    f["max_days_between_txns"] = f["max_days_between_txns"].fillna(0)
+
     f["transactions_per_day"]        = f["transaction_count_total"] / f["time_span_days"]
     f["transactions_per_active_day"] = f["transaction_count_total"] / f["active_days"].clip(lower=1)
     f["volume_per_day"]   = f["total_volume"]  / f["time_span_days"]
@@ -430,9 +437,32 @@ def build_customer_features(txn: pd.DataFrame, df_kyc_ind, df_kyc_bus) -> pd.Dat
         ).reset_index()
         f = f.merge(card_geo, on="customer_id", how="left")
 
+        # ACCT-003: 30-day and 90-day surge metrics
+        card_last_dates = card_txn.groupby("customer_id")["transaction_datetime"].max().reset_index(name="card_last_txn_date")
+        card_txn_recent = card_txn.merge(card_last_dates, on="customer_id")
+        card_txn_recent["days_since_card_last"] = (card_txn_recent["card_last_txn_date"] - card_txn_recent["transaction_datetime"]).dt.days
+        
+        card_30d = card_txn_recent[card_txn_recent["days_since_card_last"] <= 30].groupby("customer_id").agg(
+            card_volume_30d=("amount_cad", "sum")
+        ).reset_index()
+        f = f.merge(card_30d, on="customer_id", how="left")
+        
+        card_90d = card_txn_recent[card_txn_recent["days_since_card_last"] <= 90].groupby("customer_id").agg(
+            card_volume_90d=("amount_cad", "sum")
+        ).reset_index()
+        f = f.merge(card_90d, on="customer_id", how="left")
+
     # Fill all card feature columns
     card_feature_cols = [c for c in f.columns if c.startswith("card_")]
     f[card_feature_cols] = f[card_feature_cols].fillna(0)
+    
+    # Calculate surge ratios
+    if "sum_card" in f.columns:
+        f["card_30d_ratio"] = (f.get("card_volume_30d", pd.Series(0, index=f.index)) / (f["sum_card"] + 1)).fillna(0)
+        f["card_90d_ratio"] = (f.get("card_volume_90d", pd.Series(0, index=f.index)) / (f["sum_card"] + 1)).fillna(0)
+    else:
+        f["card_30d_ratio"] = 0
+        f["card_90d_ratio"] = 0
 
     # ── EFT/EMT-specific features ──────────────────────────────────────────
     # EFT (Electronic Fund Transfers): PML-TBML-03/04 (counterparty risk, volume spike)

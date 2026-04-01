@@ -49,6 +49,9 @@ MAX_CUSTOMERS_PER_RUN = int(os.getenv("MAX_CUSTOMERS_PER_RUN", "1"))
 GGUF_LOCAL_PATH = os.getenv("GGUF_LOCAL_PATH", "./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf")
 GGUF_HF_REPO = os.getenv("GGUF_HF_REPO", "bartowski/Llama-3.2-3B-Instruct-GGUF")
 GGUF_FILENAME = os.getenv("GGUF_FILENAME", "Llama-3.2-3B-Instruct-Q4_K_M.gguf")
+LOCAL_LLM_N_CTX = int(os.getenv("LOCAL_LLM_N_CTX", "4096"))
+LOCAL_LLM_N_BATCH = int(os.getenv("LOCAL_LLM_N_BATCH", "256"))
+LOCAL_LLM_N_GPU_LAYERS = int(os.getenv("LOCAL_LLM_N_GPU_LAYERS", "0"))
 
 HF_HIGH_RISK_EVIDENCE_PATH = os.getenv(
     "HF_HIGH_RISK_EVIDENCE_PATH",
@@ -415,12 +418,33 @@ elif MODEL_BACKEND == "local_llm":
         print(f"Model downloaded to: {GGUF_LOCAL_PATH}")
 
     print("Loading local GGUF model...")
-    MODEL = Llama(
-        model_path=GGUF_LOCAL_PATH,
-        n_ctx=8192,
-        n_gpu_layers=-1,
-        verbose=False,
+    print(
+        f"Local LLM config: n_ctx={LOCAL_LLM_N_CTX}, "
+        f"n_batch={LOCAL_LLM_N_BATCH}, n_gpu_layers={LOCAL_LLM_N_GPU_LAYERS}"
     )
+    try:
+        MODEL = Llama(
+            model_path=GGUF_LOCAL_PATH,
+            n_ctx=LOCAL_LLM_N_CTX,
+            n_batch=min(LOCAL_LLM_N_BATCH, LOCAL_LLM_N_CTX),
+            n_gpu_layers=LOCAL_LLM_N_GPU_LAYERS,
+            offload_kqv=LOCAL_LLM_N_GPU_LAYERS > 0,
+            op_offload=LOCAL_LLM_N_GPU_LAYERS > 0,
+            verbose=False,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to initialize the local GGUF model. "
+            "This environment is currently failing inside llama.cpp context creation, "
+            "which is commonly caused by an incompatible Metal-enabled llama-cpp-python "
+            "build on macOS. Try reinstalling a CPU-only build of llama-cpp-python or "
+            "adjust LOCAL_LLM_N_CTX / LOCAL_LLM_N_GPU_LAYERS in .env. "
+            f"Current config: GGUF_LOCAL_PATH={GGUF_LOCAL_PATH}, "
+            f"LOCAL_LLM_N_CTX={LOCAL_LLM_N_CTX}, "
+            f"LOCAL_LLM_N_BATCH={LOCAL_LLM_N_BATCH}, "
+            f"LOCAL_LLM_N_GPU_LAYERS={LOCAL_LLM_N_GPU_LAYERS}. "
+            f"Original error: {exc}"
+        ) from exc
 else:
     raise ValueError("MODEL_BACKEND must be 'gemini' or 'local_llm'.")
 

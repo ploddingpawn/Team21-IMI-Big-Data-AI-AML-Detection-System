@@ -50,7 +50,6 @@ import time
 import re
 from pathlib import Path
 from huggingface_hub import hf_hub_download, HfApi
-# Note: dotenv and os are already imported in Block 1
 
 if MODEL_BACKEND == "gemini":
     import google.generativeai as genai

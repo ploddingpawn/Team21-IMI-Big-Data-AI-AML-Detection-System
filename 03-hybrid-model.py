@@ -22,21 +22,21 @@ Layer 2 — Rule-Based Hard Flags  (weight: 0.30)
   row-by-row. Rules fire independently of the statistical model, ensuring
   regulatory thresholds are always reflected in the final score.
 
-Layer 3 — KMeans Cluster Risk Tier  (metadata only — not in final score)
-  Clusters customers in the 5D dynamic score space (IF × Rule per typology).
-  Output used as supplementary investigative context only (cluster_primary_typology,
-  cluster_risk_tier, cluster_score). k auto-selected by silhouette score.
+Layer 3 — KMeans Behavioral Peer-Grouping  (weight: 0.30)
+  Clusters customers using RobustScaled raw IF scores to form behavioral archetypes.
+  Must iterate k to ensure min cluster size >= 200 to avoid overfitting.
+  Produces a peer-relative severity rank (kmeans_score): within-cluster percentile
+  of the customer's raw dynamic cross-corroboration sum.
 
-Ensemble (Coverage-Based Fallback):
+Ensemble (3-Pillar Scored Model):
   dynamic_i    = IF_score_i × Rule_score_i          (per typology, 5 values)
-  norm_dynamic = min-max normalised sum of dynamic_i across population
+  dynamic_norm = min-max normalised sum of dynamic_i across population
   coverage     = fraction of 5 typologies with rule_score > 0
-  final_score  = norm_dynamic + (1 − coverage) × IF_weighted
+  
+  final_score  = (0.50 × dynamic_norm)
+               + (0.20 × (1 − coverage) × IF_weighted)
+               + (0.30 × kmeans_score)
 
-  coverage=1.0 → IF contributes nothing additive; it is already embedded
-    as multipliers inside norm_dynamic.
-  coverage=0.0 → IF carries the full score (zero-day anomaly detection).
-  Partial coverage → IF fills exactly the gap left by silent rule typologies.
   Normalised to [0,1], ranked. Top 1% flagged as predicted suspicious.
 
 Usage:
@@ -1106,18 +1106,6 @@ def main():
         default=DEFAULT_HF_OUTPUT_DIR,
         help="HF folder where hybrid model outputs will be uploaded.",
     )
-    parser.add_argument("--k_min",   type=int, default=3,
-                        help="Min k for silhouette search (default: 3)")
-    parser.add_argument("--k_max",   type=int, default=8,
-                        help="Max k for silhouette search (default: 8)")
-    parser.add_argument("--k",       type=int, default=0,
-                        help="Fix k directly (0 = auto-select, default)")
-    parser.add_argument("--w_if",      type=float, default=0.50,
-                        help="Weight for IF weighted score (default: 0.50)")
-    parser.add_argument("--w_cluster", type=float, default=0.15,
-                        help="Weight for dynamic-space cluster score (default: 0.15)")
-    parser.add_argument("--w_rule",    type=float, default=0.35,
-                        help="Weight for normalised dynamic score (default: 0.35)")
     args = parser.parse_args()
 
     hf_repo = normalize_hf_repo_id(args.hf_repo)
@@ -1131,8 +1119,8 @@ def main():
     print("HYBRID AML MODEL — IF + Rules (Coverage-Based Fallback ensemble)")
     print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
-    print(f"\nEnsemble: norm_dynamic + (1−coverage) × IF_weighted")
-    print(f"KMeans:   runs on 5D dynamic-score space; output is metadata only")
+    print(f"\nEnsemble: 0.50 × dynamic_norm  +  0.20 × (1−coverage) × IF_weighted  +  0.30 × kmeans_score")
+    print(f"KMeans:   Behavioral peer-grouping on raw IF scores (thin-cluster safeguard > 200)")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
     print(f"Typology weights (IF layer): {tw}")
     print("(FINTRAC/FinCEN thresholds grounded — weights reflect IF validation ROC-AUC)")
@@ -1175,20 +1163,20 @@ def main():
               f"{df_features[col].quantile(0.95):>6.3f}  "
               f"{df_features[col].max():>6.3f}")
 
-    print(f"\n  Weighted rule score — "
+    print(f"\n  Weighted rule score \u2014 "
           f"mean={df_features['rule_score_weighted'].mean():.3f}  "
           f"p95={df_features['rule_score_weighted'].quantile(0.95):.3f}  "
           f"max={df_features['rule_score_weighted'].max():.3f}")
     print(f"  Customers with any rule triggered: "
           f"{(df_features['rules_triggered'] > 0).sum():,}")
 
-    # ── Dynamic Scores: IF × Rule per typology ────────────────────────────
+    # \u2500\u2500 Dynamic Scores: IF \u00d7 Rule per typology \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
     # Multiplicative gate: each typology's rule score is amplified by how
     # anomalous the IF model found that typology to be for this customer.
     # If either model sees no signal, the dynamic score is near zero.
     # Only where both agree does the score become meaningfully large.
     print("\n" + "-" * 70)
-    print("Computing dynamic scores (IF × Rule per typology)...")
+    print("Computing dynamic scores (IF \u00d7 Rule per typology)...")
     print("-" * 70)
 
     typology_pairs = [
@@ -1219,7 +1207,7 @@ def main():
             pre_hybrid[dyn_col] = pre_hybrid[if_col] * pre_hybrid[rule_col]
             dynamic_cols.append(dyn_col)
 
-    # Sum of dynamic scores — peaks at 5.0 if all typologies fully agree
+    # Sum of dynamic scores \u2014 peaks at 5.0 if all typologies fully agree
     pre_hybrid["dynamic_score_raw"] = pre_hybrid[dynamic_cols].sum(axis=1)
 
     # Normalise dynamic score to [0, 1] across the population
@@ -1229,7 +1217,7 @@ def main():
         (pre_hybrid["dynamic_score_raw"] - dyn_min) / (dyn_max - dyn_min + 1e-9)
     )
 
-    print(f"  Dynamic score (IF×Rule sum) — "
+    print(f"  Dynamic score (IF\u00d7Rule sum) \u2014 "
           f"mean={pre_hybrid['dynamic_score_raw'].mean():.3f}  "
           f"p95={pre_hybrid['dynamic_score_raw'].quantile(0.95):.3f}  "
           f"max={pre_hybrid['dynamic_score_raw'].max():.3f}")
@@ -1238,71 +1226,194 @@ def main():
         print(f"    {name:<30}: mean={pre_hybrid[dyn_col].mean():.3f}  "
               f"max={pre_hybrid[dyn_col].max():.3f}")
 
-    # ── Layer 3: KMeans clustering on DYNAMIC score space ─────────────────
+    # \u2500\u2500 Layer 3: KMeans \u2014 Behavioral Peer-Grouping on Raw IF Scores \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    # Purpose: Group customers into behavioral archetypes using the 5 raw IF
+    # anomaly scores. Clusters are formed purely from the ML model's view of
+    # each customer's behavioral shape \u2014 independent of the rule engine.
+    # The within-cluster percentile (derived from dynamic_score_raw) then
+    # measures relative severity against behavioral peers, not the full
+    # population. This is the core insight: a customer who is the most
+    # rule-corroborated anomaly WITHIN their own behavioral cohort is a
+    # stronger signal than absolute raw scores alone.
     print("\n" + "-" * 70)
-    print("Layer 3 — KMeans clustering on dynamic (IF × Rule) scores...")
-    print("  (Clusters form around customers where both models corroborate.")
-    print("   Pure IF anomalies and pure rule triggers land in separate cohorts,")
-    print("   isolating the highest-confidence suspicious patterns.)")
+    print("Layer 3 \u2014 KMeans behavioral peer-grouping on raw IF scores...")
+    print("  Input: 5 raw IF scores, RobustScaled  (k-means++, n_init=20)")
+    print("  Score: within-cluster percentile rank of dynamic_score_raw")
     print("-" * 70)
 
-    df_cluster = pre_hybrid[["customer_id"] + dynamic_cols].copy()
-    df_cluster[dynamic_cols] = df_cluster[dynamic_cols].fillna(0)
-    X_cluster  = df_cluster[dynamic_cols].values
+    from sklearn.preprocessing import RobustScaler
 
-    k_range = range(args.k_min, args.k_max + 1)
-    best_k  = args.k if args.k > 0 else select_k(X_cluster, k_range)
+    # RobustScaler: uses IQR, so extreme right-skew of IF scores doesn't
+    # distort the cluster centroids. Outliers remain far from the centroid
+    # without artificially inflating the scale of the normal population.
+    X_if        = pre_hybrid[avail_if_cols].fillna(0).values
+    X_if_scaled = RobustScaler().fit_transform(X_if)
 
-    print(f"\n  Training KMeans with k={best_k}...")
-    kmeans = KMeans(n_clusters=best_k, random_state=42, n_init=20)
-    kmeans.fit(X_cluster)
-    df_cluster["cluster"] = kmeans.labels_
+    # Thin-cluster refit loop: drop K until all clusters have >= 200 members.
+    # A cluster smaller than 200 members (0.33% of 61K) cannot generate
+    # a statistically meaningful percentile rank.
+    MIN_CLUSTER_SIZE = 200
+    best_k  = 8
+    k_floor = 3
+    while best_k >= k_floor:
+        print(f"\n  Fitting KMeans with k={best_k}...")
+        kmeans = KMeans(
+            n_clusters=best_k,
+            init="k-means++",
+            n_init=20,
+            random_state=42,
+        )
+        kmeans.fit(X_if_scaled)
+        labels_arr    = kmeans.labels_
+        cluster_sizes = np.bincount(labels_arr)
+        min_size      = cluster_sizes.min()
+        print(f"  Cluster sizes \u2014 min={min_size}  max={cluster_sizes.max()}  "
+              f"mean={cluster_sizes.mean():.0f}")
+        if min_size >= MIN_CLUSTER_SIZE:
+            break
+        print(f"  Thin cluster detected (min={min_size} < {MIN_CLUSTER_SIZE}). "
+              f"Dropping k to {best_k - 1}...")
+        best_k -= 1
+    else:
+        print(f"  WARNING: Could not satisfy min cluster size >= {MIN_CLUSTER_SIZE} "
+              f"before hitting k_floor={k_floor}. Proceeding with k={k_floor}.")
+        best_k = k_floor
 
-    cluster_summary = profile_clusters(df_cluster, dynamic_cols)
-    df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(cluster_summary["primary_typology"])
-    df_cluster["cluster_risk_tier"]        = df_cluster["cluster"].map(cluster_summary["risk_tier"])
+    df_cluster = pre_hybrid[["customer_id", "dynamic_score_raw"]].copy()
+    df_cluster["cluster"] = labels_arr
 
-    # Continuous cluster score: base tier × normalised within-cluster centroid distance.
-    all_distances = kmeans.transform(X_cluster)
-    own_dist      = all_distances[np.arange(len(df_cluster)), kmeans.labels_]
-    cluster_score = np.zeros(len(df_cluster), dtype=float)
-    for cid, row in cluster_summary.iterrows():
-        mask  = kmeans.labels_ == cid
-        base  = row["risk_tier"]
-        d     = own_dist[mask]
-        d_min, d_max = d.min(), d.max()
-        norm  = (d - d_min) / (d_max - d_min + 1e-9)
-        cluster_score[mask] = base * (0.5 + 0.5 * norm)
-    df_cluster["cluster_score"] = cluster_score
+    cluster_summary = profile_clusters(df_cluster, ["dynamic_score_raw"])
+    df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(
+        cluster_summary["primary_typology"])
+    df_cluster["cluster_risk_tier"] = df_cluster["cluster"].map(
+        cluster_summary["risk_tier"])
 
-    print(f"\n  Continuous cluster score (dynamic-space) — "
-          f"mean={cluster_score.mean():.3f}  "
-          f"p95={np.percentile(cluster_score, 95):.3f}  "
-          f"max={cluster_score.max():.3f}")
+    # Within-cluster percentile rank of dynamic_score_raw.
+    # IMPORTANT: We rank on dynamic_score_raw (not dynamic_score_norm) because
+    # dynamic_score_norm is globally normalised, giving nearly everyone in the
+    # low-risk blob values of ~0.0-0.05. That causes tying problems. The raw
+    # sum has higher numerical resolution and identical relative ordering.
+    kmeans_score = np.zeros(len(df_cluster), dtype=float)
+    for cid in range(best_k):
+        mask     = df_cluster["cluster"].values == cid
+        raw_vals = df_cluster.loc[mask, "dynamic_score_raw"].values
+        n        = mask.sum()
+        if n == 0:
+            continue
+        # percentile_rank: fraction of peers with a LOWER score
+        ranks = np.argsort(np.argsort(raw_vals))   # zero-indexed ordinal rank
+        kmeans_score[mask] = ranks / max(n - 1, 1)
+    df_cluster["kmeans_score"] = kmeans_score
 
-    # ── Ensemble fusion: Coverage-Based Fallback ───────────────────────
-    # final_score = dynamic_score_norm
-    #             + (1 - coverage) × if_score_weighted
-    #
-    # Where:
-    #   dynamic_score_norm  = normalised sum of (IF_i × Rule_i) across typologies
-    #   coverage            = fraction of typologies with at least one rule fired
-    #   if_score_weighted   = traditional IF weighted score (zero-day catcher)
-    #
-    # If coverage=1.0 (all typologies have rules): IF contributes 0 additively —
-    #   it is already fully embedded as multipliers inside dynamic_score_norm.
-    # If coverage=0.0 (no rules fire at all): IF carries the entire score,
-    #   preserving zero-day anomaly detection.
-    # Partial coverage pro-rates the IF contribution to fill exactly the gap
-    #   that the rule engine leaves behind.
+    print(f"\n  KMeans score (within-cluster percentile) \u2014 "
+          f"mean={kmeans_score.mean():.3f}  "
+          f"p95={np.percentile(kmeans_score, 95):.3f}  "
+          f"max={kmeans_score.max():.3f}")
+    # Purpose: Group customers into behavioral archetypes using the 5 raw IF
+    # anomaly scores. Clusters are formed purely from the ML model's view of
+    # each customer's behavioral shape — independent of the rule engine.
+    # The within-cluster percentile (derived from dynamic_score_raw) then
+    # measures relative severity against behavioral peers, not the full
+    # population. This is the core insight: a customer who is the most
+    # rule-corroborated anomaly WITHIN their own behavioral cohort is a
+    # stronger signal than absolute raw scores alone.
     print("\n" + "-" * 70)
-    print("Ensemble fusion (Coverage-Based Fallback)...")
-    print("  final = dynamic_score_norm + (1 − coverage) × if_score_weighted")
+    print("Layer 3 — KMeans behavioral peer-grouping on raw IF scores...")
+    print("  Input: 5 raw IF scores, RobustScaled  (k-means++, n_init=20)")
+    print("  Score: within-cluster percentile rank of dynamic_score_raw")
+    print("-" * 70)
+
+    from sklearn.preprocessing import RobustScaler
+
+    # RobustScaler: uses IQR, so extreme right-skew of IF scores doesn't
+    # distort the cluster centroids. Outliers remain far from the centroid
+    # without artificially inflating the scale of the normal population.
+    X_if = pre_hybrid[avail_if_cols].fillna(0).values
+    X_if_scaled = RobustScaler().fit_transform(X_if)
+
+    # Thin-cluster refit loop: drop K until all clusters have >= 200 members.
+    # A cluster smaller than 200 members (0.33% of 61K) cannot generate
+    # a statistically meaningful percentile rank.
+    MIN_CLUSTER_SIZE = 200
+    best_k = 8
+    k_floor = 3
+    while best_k >= k_floor:
+        print(f"\n  Fitting KMeans with k={best_k}...")
+        kmeans = KMeans(
+            n_clusters=best_k,
+            init="k-means++",
+            n_init=20,
+            random_state=42,
+        )
+        kmeans.fit(X_if_scaled)
+        labels_arr   = kmeans.labels_
+        cluster_sizes = np.bincount(labels_arr)
+        min_size = cluster_sizes.min()
+        print(f"  Cluster sizes — min={min_size}  max={cluster_sizes.max()}  "
+              f"mean={cluster_sizes.mean():.0f}")
+        if min_size >= MIN_CLUSTER_SIZE:
+            break
+        print(f"  Thin cluster detected (min={min_size} < {MIN_CLUSTER_SIZE}). "
+              f"Dropping k to {best_k - 1}...")
+        best_k -= 1
+    else:
+        print(f"  WARNING: Could not satisfy min cluster size >= {MIN_CLUSTER_SIZE} "
+              f"before hitting k_floor={k_floor}. Proceeding with k={best_k}+1.")
+        best_k += 1
+
+    df_cluster = pre_hybrid[["customer_id", "dynamic_score_raw"]].copy()
+    df_cluster["cluster"] = labels_arr
+
+    cluster_summary = profile_clusters(df_cluster, ["dynamic_score_raw"])
+    df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(
+        cluster_summary["primary_typology"])
+    df_cluster["cluster_risk_tier"] = df_cluster["cluster"].map(
+        cluster_summary["risk_tier"])
+
+    # Within-cluster percentile rank of dynamic_score_raw.
+    # IMPORTANT: We rank on dynamic_score_raw (not dynamic_score_norm) because
+    # dynamic_score_norm is globally normalised, giving nearly everyone in the
+    # low-risk blob values of ~0.0-0.05. That causes tying problems. The raw
+    # sum has higher numerical resolution and identical relative ordering.
+    kmeans_score = np.zeros(len(df_cluster), dtype=float)
+    for cid in range(best_k):
+        mask = df_cluster["cluster"].values == cid
+        raw_vals = df_cluster.loc[mask, "dynamic_score_raw"].values
+        n = mask.sum()
+        if n == 0:
+            continue
+        # percentile_rank: fraction of peers with a LOWER score
+        ranks = np.argsort(np.argsort(raw_vals))  # zero-indexed ordinal rank
+        kmeans_score[mask] = ranks / max(n - 1, 1)
+    df_cluster["kmeans_score"] = kmeans_score
+
+    print(f"\n  KMeans score (within-cluster percentile) — "
+          f"mean={kmeans_score.mean():.3f}  "
+          f"p95={np.percentile(kmeans_score, 95):.3f}  "
+          f"max={kmeans_score.max():.3f}")
+
+    # ── Ensemble fusion: 3-Pillar Scored Model ───────────────────────────────
+    # final_score = 0.50 × dynamic_score_norm       (corroborated risk signal)
+    #             + 0.20 × (1-coverage) × if_score_weighted  (zero-day fallback)
+    #             + 0.30 × kmeans_score              (peer-relative severity)
+    #
+    # Pillar 1 (50%): Corroborated risk — where both IF and rules agree.
+    #   Highest-weight because it requires two independent models to fire.
+    # Pillar 2 (20%): Zero-day fallback — IF score directly gaps not covered
+    #   by rules. coverage=1 → contribution=0; coverage=0 → full IF weight.
+    # Pillar 3 (30%): Within-cluster peer severity. KMeans groups customers
+    #   by IF behavioral archetype; this pillar measures how extreme they are
+    #   within their own behavioral peer group. Catches moderate rule-hitters
+    #   who are still the worst in a suspicious cohort.
+    print("\n" + "-" * 70)
+    print("Ensemble fusion (3-Pillar: Dynamic + IF Fallback + Peer Percentile)...")
+    print("  final = 0.50 × dynamic_norm  +  0.20 × (1−coverage) × IF_weighted")
+    print("        + 0.30 × within-cluster percentile")
     print("-" * 70)
 
     merge_cluster = df_cluster[["customer_id", "cluster",
-                                 "cluster_risk_tier", "cluster_score",
-                                 "cluster_primary_typology"]]
+                                 "cluster_risk_tier", "cluster_primary_typology",
+                                 "kmeans_score"]]
 
     hybrid = (
         pre_hybrid
@@ -1316,10 +1427,14 @@ def main():
         if rc in hybrid.columns
     ) / len(rule_cols)
 
-    # Raw ensemble: dynamic corroboration + gap-filling IF baseline
+    # Adjust the within-cluster percentile by the cluster's baseline risk
+    # so high percentiles in clean clusters don't artificially inflate risk.
+    hybrid["adjusted_kmeans_score"] = hybrid["kmeans_score"] * hybrid["cluster_risk_tier"]
+
     hybrid["final_hybrid_score"] = (
-        hybrid["dynamic_score_norm"] +
-        (1.0 - hybrid["coverage"]) * hybrid["if_score_weighted"]
+        0.50 * hybrid["dynamic_score_norm"] +
+        0.20 * (1.0 - hybrid["coverage"]) * hybrid["if_score_weighted"] +
+        0.30 * hybrid["adjusted_kmeans_score"]
     )
 
     # Normalise to [0, 1]
@@ -1340,8 +1455,8 @@ def main():
     print(f"    Customers with zero coverage (no rules fired):   "
           f"{(hybrid['coverage']==0.0).sum():,}")
     print(f"\n  Component correlations with final score:")
-    for col in ["if_score_weighted", "dynamic_score_norm", "coverage",
-                "rule_score_weighted", "cluster_score"]:
+    for col in ["dynamic_score_norm", "if_score_weighted", "kmeans_score",
+                "adjusted_kmeans_score", "coverage", "rule_score_weighted"]:
         if col in hybrid.columns:
             print(f"    {col:<30}: r={hybrid[col].corr(hybrid['final_hybrid_score']):.3f}")
 
@@ -1358,16 +1473,14 @@ def main():
         n_total  = len(hybrid)
 
         try:
-            roc_hybrid = roc_auc_score(hybrid.loc[labeled, "actual_label"],
-                                        hybrid.loc[labeled, "final_hybrid_score"])
-            roc_if_wtd = roc_auc_score(hybrid.loc[labeled, "actual_label"],
-                                        hybrid.loc[labeled, "if_score_weighted"])
-            roc_if_max = roc_auc_score(hybrid.loc[labeled, "actual_label"],
-                                        hybrid.loc[labeled, "if_score_max"])
-            roc_rule   = roc_auc_score(hybrid.loc[labeled, "actual_label"],
-                                        hybrid.loc[labeled, "rule_score_weighted"])
+            roc_hybrid   = roc_auc_score(hybrid.loc[labeled, "actual_label"], hybrid.loc[labeled, "final_hybrid_score"])
+            roc_if_wtd   = roc_auc_score(hybrid.loc[labeled, "actual_label"], hybrid.loc[labeled, "if_score_weighted"])
+            roc_if_max   = roc_auc_score(hybrid.loc[labeled, "actual_label"], hybrid.loc[labeled, "if_score_max"])
+            roc_rule     = roc_auc_score(hybrid.loc[labeled, "actual_label"], hybrid.loc[labeled, "rule_score_weighted"])
+            roc_dynamic  = roc_auc_score(hybrid.loc[labeled, "actual_label"], hybrid.loc[labeled, "dynamic_score_norm"])
+            roc_kmeans   = roc_auc_score(hybrid.loc[labeled, "actual_label"], hybrid.loc[labeled, "adjusted_kmeans_score"])
         except Exception:
-            roc_hybrid = roc_if_wtd = roc_if_max = roc_rule = 0.0
+            roc_hybrid = roc_if_wtd = roc_if_max = roc_rule = roc_dynamic = roc_kmeans = 0.0
 
         print("\n" + "=" * 70)
         print("FINAL VALIDATION  (directional only — 10 positives, high variance)")
@@ -1376,7 +1489,9 @@ def main():
         print(f"    Hybrid (weighted ensemble):  {roc_hybrid:.3f}")
         print(f"    IF weighted alone:           {roc_if_wtd:.3f}")
         print(f"    IF max alone:                {roc_if_max:.3f}")
-        print(f"    Rules alone:                 {roc_rule:.3f}")
+        print(f"    Rules alone (weighted):      {roc_rule:.3f}")
+        print(f"    Dynamic score (IF×Rule):     {roc_dynamic:.3f}")
+        print(f"    KMeans adjusted percentile:  {roc_kmeans:.3f}")
 
         print(f"\n  Capture rates:")
         for pct in [0.01, 0.05, 0.10]:
@@ -1455,7 +1570,7 @@ def main():
          "if_score_weighted", "if_score_max",
          "dynamic_score_norm", "dynamic_score_raw",
          "rule_score_weighted", "rules_triggered",
-         "cluster_risk_tier", "cluster_score", "rule_indicator_trace"]
+         "cluster_risk_tier", "kmeans_score", "adjusted_kmeans_score", "rule_indicator_trace"]
         + avail_if_cols + rule_cols + dynamic_cols
     )
     

@@ -23,14 +23,16 @@ Layer 2 — Rule-Based Hard Flags  (weight: 0.30)
   regulatory thresholds are always reflected in the final score.
 
 Layer 3 — KMeans Cluster Risk Tier  (weight: 0.10)
-  Clusters customers in the 5D IF score space. k is auto-selected by
-  silhouette score rather than defaulted to 5 — in practice the score
-  space tends to have 1 large low-risk mass and 2-3 high-risk profiles,
-  so k=3 or k=4 often outperforms k=5. Cluster risk tier (0/0.5/1.0)
-  based on mean IF score provides a soft group-level corroboration signal.
+  Clusters customers in the 5D RULE score space (not IF space). Rule scores
+  are grounded in FINTRAC/FinCEN regulatory thresholds and have low correlation
+  with IF scores (r≈0.34), so clustering here groups customers by which
+  regulatory patterns they co-trigger — independent group-level evidence.
+  Continuous cluster score [0,1] = base tier × within-cluster distance from
+  centroid, so outliers within a high-risk regulatory cohort score higher
+  than typical members. k auto-selected by silhouette score.
 
 Ensemble:
-  final_score = 0.60 * if_weighted + 0.30 * rule_weighted + 0.10 * cluster_tier
+  final_score = 0.60 * if_weighted + 0.30 * rule_weighted + 0.10 * cluster_score
   Normalised to [0,1], ranked. Top 1% flagged as predicted suspicious.
 
 Usage:
@@ -829,35 +831,50 @@ def select_k(X: np.ndarray, k_range: range) -> int:
     return best_k
 
 
-def profile_clusters(df: pd.DataFrame, if_cols: list) -> pd.DataFrame:
+def profile_clusters(df: pd.DataFrame, rule_cols: list) -> pd.DataFrame:
     """
-    Profile each cluster by the mean IF score of its members.
+    Profile each cluster by the mean RULE score of its members.
+
+    Clustering is performed in rule score space (not IF space), so each
+    cluster groups customers by which regulatory thresholds they co-trigger,
+    independent of how statistically anomalous they look to the IF model.
 
     How it works:
-      1. Compute the mean of each typology IF score within each cluster.
-         This tells us what kind of risk the typical cluster member has.
-      2. Normalise these means across clusters so we can compare relative
-         dominance — which typology is most elevated in this cluster vs
-         the others. A cluster where structuring_layering averages 0.4
-         while the population average is 0.2 is a structuring-dominant cluster.
+      1. Compute the mean of each typology rule score within each cluster.
+         This tells us which regulatory threshold patterns the typical
+         cluster member fires — e.g. a cluster dominated by high
+         rule_cross_border_geo means its members share international
+         transaction patterns that trigger GEO-001..005 / WIRE-008/010.
+      2. Normalise these means across clusters to identify relative dominance.
+         A cluster where rule_structuring_layering averages 0.45 while
+         others average 0.05 is a structuring-dominant regulatory cohort.
       3. The primary typology label is the highest normalised dimension,
          but only if it exceeds 0.25 — below this no typology dominates
-         and the cluster is labelled General Low Risk.
-      4. Risk tier is based on the mean of ALL IF scores for that cluster
-         (not the max). Mean is more representative of the typical member;
-         max is distorted by a handful of extreme outliers within the cluster.
+         and the cluster is labelled General — Low Risk.
+      4. Risk tier is based on the mean of ALL rule scores for that cluster.
+         Mean is more representative than max; max is distorted by a handful
+         of extreme rule violators within the cluster.
 
     Risk tiers:
-      High   (1.0) — cluster mean risk > 67th percentile across clusters
-      Medium (0.5) — cluster mean risk > 33rd percentile
-      Low    (0.0) — cluster mean risk <= 33rd percentile
+      High   (1.0) — cluster mean rule risk > 67th percentile across clusters
+      Medium (0.5) — cluster mean rule risk > 33rd percentile
+      Low    (0.0) — cluster mean rule risk <= 33rd percentile
     """
-    profile = df.groupby("cluster")[if_cols].mean()
+    profile = df.groupby("cluster")[rule_cols].mean()
     p_norm  = (profile - profile.min()) / (profile.max() - profile.min() + 1e-9)
+
+    # Map rule column names to display labels
+    rule_label_map = {
+        "rule_structuring_layering": TYPOLOGY_LABELS["if_score_structuring_layering"],
+        "rule_behavioural_profile":  TYPOLOGY_LABELS["if_score_behavioural_profile"],
+        "rule_trade_shell":          TYPOLOGY_LABELS["if_score_trade_shell"],
+        "rule_cross_border_geo":     TYPOLOGY_LABELS["if_score_cross_border_geo"],
+        "rule_human_trafficking":    TYPOLOGY_LABELS["if_score_human_trafficking"],
+    }
 
     def assign_label(row):
         return "General — Low Risk" if row.max() < 0.25 \
-               else TYPOLOGY_LABELS.get(row.idxmax(), row.idxmax())
+               else rule_label_map.get(row.idxmax(), row.idxmax())
 
     primary   = p_norm.apply(assign_label, axis=1)
     mean_risk = profile.mean(axis=1)
@@ -867,14 +884,14 @@ def profile_clusters(df: pd.DataFrame, if_cols: list) -> pd.DataFrame:
     summary = pd.DataFrame({"primary_typology": primary, "risk_tier": risk_tier})
 
     k = len(profile)
-    short = [c.replace("if_score_", "")[:14] for c in if_cols]
-    print(f"\n  Cluster profiles (k={k}, mean IF scores):")
+    short = [c.replace("rule_", "")[:14] for c in rule_cols]
+    print(f"\n  Cluster profiles (k={k}, mean rule scores):")
     print("  {:>3}  {:>7}  {}  {:>5}  Label".format(
         "Cls", "n", "  ".join(f"{h:>14}" for h in short), "Tier"))
     print("  " + "-" * 110)
     for c in profile.index:
         n     = (df["cluster"] == c).sum()
-        vals  = "  ".join(f"{profile.loc[c, col]:>14.3f}" for col in if_cols)
+        vals  = "  ".join(f"{profile.loc[c, col]:>14.3f}" for col in rule_cols)
         tier  = {0.0: "LOW", 0.5: "MED", 1.0: "HIGH"}[risk_tier[c]]
         label = summary.loc[c, "primary_typology"]
         print(f"  {c:>3}  {n:>7,}  {vals}  {tier:>5}  {label}")
@@ -907,12 +924,12 @@ def main():
                         help="Max k for silhouette search (default: 8)")
     parser.add_argument("--k",       type=int, default=0,
                         help="Fix k directly (0 = auto-select, default)")
-    parser.add_argument("--w_if",       type=float, default=0.70,
-                        help="Weight for IF max score")
+    parser.add_argument("--w_if",       type=float, default=0.60,
+                        help="Weight for IF weighted score (default: 0.60)")
     parser.add_argument("--w_cluster",  type=float, default=0.10,
-                        help="Weight for cluster risk tier")
-    parser.add_argument("--w_rule",     type=float, default=0.20,
-                        help="Weight for rule-based flag score")
+                        help="Weight for rule-space cluster score (default: 0.10)")
+    parser.add_argument("--w_rule",     type=float, default=0.30,
+                        help="Weight for rule-based flag score (default: 0.30)")
     args = parser.parse_args()
 
     base_dir  = Path(args.base_dir)
@@ -921,10 +938,11 @@ def main():
     model_dir.mkdir(exist_ok=True, parents=True)
 
     print("=" * 70)
-    print("HYBRID AML MODEL — IF + Rules + KMeans")
+    print("HYBRID AML MODEL — IF + Rules + KMeans (rule-space clusters)")
     print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
     print(f"\nEnsemble weights:  IF={args.w_if}  |  Rules={args.w_rule}  |  Cluster={args.w_cluster}")
+    print(f"KMeans input:      Rule scores (5D) — independent of IF layer")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
     print(f"Typology weights:  {tw}")
     print("(Weights grounded in IF validation ROC-AUC — not tuned on labels)")
@@ -974,15 +992,19 @@ def main():
     print(f"  Customers with any rule triggered: "
           f"{(df_features['rules_triggered'] > 0).sum():,}")
 
-    # ── Layer 3: KMeans clustering ─────────────────────────────────────────
+    # ── Layer 3: KMeans clustering on RULE score space ────────────────────
     print("\n" + "-" * 70)
-    print("Layer 3 — KMeans clustering on typology IF scores...")
+    print("Layer 3 — KMeans clustering on typology RULE scores...")
+    print("  (Rationale: rule scores are grounded in FINTRAC/FinCEN regulatory")
+    print("   thresholds and have low correlation with IF scores (r≈0.34),")
+    print("   so clustering in rule space captures independent group-level")
+    print("   evidence — customers who co-trigger the same regulatory patterns.)")
     print("-" * 70)
 
-    if_scores_df = iso_results[["customer_id"] + avail_if_cols].copy()
-    df_cluster   = df_features.merge(if_scores_df, on="customer_id", how="left")
-    df_cluster[avail_if_cols] = df_cluster[avail_if_cols].fillna(0)
-    X_cluster    = df_cluster[avail_if_cols].values
+    # Rule score columns are already on df_features from Layer 2
+    df_cluster = df_features[["customer_id"] + rule_cols].copy()
+    df_cluster[rule_cols] = df_cluster[rule_cols].fillna(0)
+    X_cluster = df_cluster[rule_cols].values
 
     k_range = range(args.k_min, args.k_max + 1)
     best_k  = args.k if args.k > 0 else select_k(X_cluster, k_range)
@@ -992,9 +1014,29 @@ def main():
     kmeans.fit(X_cluster)
     df_cluster["cluster"] = kmeans.labels_
 
-    cluster_summary = profile_clusters(df_cluster, avail_if_cols)
+    cluster_summary = profile_clusters(df_cluster, rule_cols)
     df_cluster["cluster_primary_typology"] = df_cluster["cluster"].map(cluster_summary["primary_typology"])
     df_cluster["cluster_risk_tier"]        = df_cluster["cluster"].map(cluster_summary["risk_tier"])
+
+    # Continuous cluster score: base tier × within-cluster distance from centroid.
+    # Customers who are outliers within their rule-based cohort (far from centroid)
+    # score higher than typical members — adds within-cluster differentiation.
+    all_distances = kmeans.transform(X_cluster)
+    own_dist      = all_distances[np.arange(len(df_cluster)), kmeans.labels_]
+    cluster_score = np.zeros(len(df_cluster), dtype=float)
+    for cid, row in cluster_summary.iterrows():
+        mask  = kmeans.labels_ == cid
+        base  = row["risk_tier"]
+        d     = own_dist[mask]
+        d_min, d_max = d.min(), d.max()
+        norm  = (d - d_min) / (d_max - d_min + 1e-9)
+        cluster_score[mask] = base * (0.5 + 0.5 * norm)
+    df_cluster["cluster_score"] = cluster_score
+
+    print(f"\n  Continuous cluster score (rule-space) — "
+          f"mean={cluster_score.mean():.3f}  "
+          f"p95={np.percentile(cluster_score, 95):.3f}  "
+          f"max={cluster_score.max():.3f}")
 
     # ── Ensemble fusion ────────────────────────────────────────────────────
     print("\n" + "-" * 70)
@@ -1008,7 +1050,8 @@ def main():
     )
 
     merge_cluster = df_cluster[["customer_id", "cluster",
-                                 "cluster_risk_tier", "cluster_primary_typology"]]
+                                 "cluster_risk_tier", "cluster_score",
+                                 "cluster_primary_typology"]]
     merge_rules   = df_features[["customer_id", "rule_score_weighted",
                                   "rules_triggered", "primary_rule_typology"] + rule_cols]
 
@@ -1019,10 +1062,11 @@ def main():
         .merge(merge_rules,   on="customer_id", how="inner")
     )
 
+    # cluster_score (continuous, rule-space) replaces the old flat cluster_risk_tier
     hybrid["final_hybrid_score"] = (
         hybrid["if_score_weighted"]   * args.w_if   +
         hybrid["rule_score_weighted"] * args.w_rule +
-        hybrid["cluster_risk_tier"]   * args.w_cluster
+        hybrid["cluster_score"]       * args.w_cluster
     )
 
     # Normalise to [0, 1]
@@ -1034,8 +1078,9 @@ def main():
     hybrid["hybrid_risk_category"] = hybrid["final_hybrid_score"].apply(risk_category)
 
     print(f"\n  Component correlations with final score:")
-    for col in ["if_score_weighted", "rule_score_weighted", "cluster_risk_tier"]:
-        print(f"    {col:<30}: r={hybrid[col].corr(hybrid['final_hybrid_score']):.3f}")
+    for col in ["if_score_weighted", "rule_score_weighted", "cluster_score", "cluster_risk_tier"]:
+        if col in hybrid.columns:
+            print(f"    {col:<30}: r={hybrid[col].corr(hybrid['final_hybrid_score']):.3f}")
 
     print(f"\n  Risk category distribution:")
     print(hybrid["hybrid_risk_category"].value_counts().to_string())
@@ -1079,13 +1124,14 @@ def main():
 
         print(f"\n  Suspicious customer breakdown:")
         print(f"  {'#':>3}  {'Rank':>7}  {'Hybrid':>7}  {'IF_w':>6}  "
-              f"{'Rule':>6}  {'Clust':>5}  Typology")
-        print(f"  {'-'*80}")
+              f"{'Rule':>6}  {'ClsScr':>7}  {'Tier':>4}  Typology")
+        print(f"  {'-'*85}")
         for i, (idx, row) in enumerate(susp.iterrows(), 1):
             print(f"  {i:>3}  {idx+1:>7,}  {row['final_hybrid_score']:>7.3f}  "
                   f"{row['if_score_weighted']:>6.3f}  "
                   f"{row['rule_score_weighted']:>6.3f}  "
-                  f"{row['cluster_risk_tier']:>5.1f}  "
+                  f"{row['cluster_score']:>7.3f}  "
+                  f"{row['cluster_risk_tier']:>4.1f}  "
                   f"{str(row['cluster_primary_typology'])[:35]}")
 
     # ── Save ───────────────────────────────────────────────────────────────
@@ -1105,7 +1151,7 @@ def main():
         ["customer_id", "final_hybrid_score", "hybrid_risk_category",
          "cluster_primary_typology", "primary_rule_typology",
          "if_score_weighted", "if_score_max", "rule_score_weighted",
-         "rules_triggered", "cluster_risk_tier"]
+         "rules_triggered", "cluster_score", "cluster_risk_tier"]
         + avail_if_cols + rule_cols
     )
     hybrid[[c for c in evidence_cols if c in hybrid.columns]]\

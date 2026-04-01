@@ -22,20 +22,21 @@ Layer 2 — Rule-Based Hard Flags  (weight: 0.30)
   row-by-row. Rules fire independently of the statistical model, ensuring
   regulatory thresholds are always reflected in the final score.
 
-Layer 3 — KMeans Cluster Risk Tier  (weight: 0.15)
-  Clusters customers in the 5D DYNAMIC score space (IF × Rule per typology).
-  Dynamic scores are the product of each typology's IF score and its rule
-  score — zero if either model sees no signal, high only when both agree.
-  This clusters customers by corroborated risk patterns, not raw flags alone.
-  Continuous cluster score [0,1] = base tier × within-cluster centroid distance.
-  k auto-selected by silhouette score.
+Layer 3 — KMeans Cluster Risk Tier  (metadata only — not in final score)
+  Clusters customers in the 5D dynamic score space (IF × Rule per typology).
+  Output used as supplementary investigative context only (cluster_primary_typology,
+  cluster_risk_tier, cluster_score). k auto-selected by silhouette score.
 
-Ensemble (Asymmetric Gating — Option C):
+Ensemble (Coverage-Based Fallback):
   dynamic_i    = IF_score_i × Rule_score_i          (per typology, 5 values)
   norm_dynamic = min-max normalised sum of dynamic_i across population
-  final_score  = 0.50 * IF_weighted                 (zero-day anomaly detection)
-               + 0.35 * norm_dynamic                (corroboration amplifier)
-               + 0.15 * cluster_score               (cohort-level evidence)
+  coverage     = fraction of 5 typologies with rule_score > 0
+  final_score  = norm_dynamic + (1 − coverage) × IF_weighted
+
+  coverage=1.0 → IF contributes nothing additive; it is already embedded
+    as multipliers inside norm_dynamic.
+  coverage=0.0 → IF carries the full score (zero-day anomaly detection).
+  Partial coverage → IF fills exactly the gap left by silent rule typologies.
   Normalised to [0,1], ranked. Top 1% flagged as predicted suspicious.
 
 Usage:
@@ -1063,14 +1064,14 @@ def main():
     model_dir.mkdir(exist_ok=True, parents=True)
 
     print("=" * 70)
-    print("HYBRID AML MODEL — IF + Rules + KMeans (Asymmetric Gating, Option C)")
+    print("HYBRID AML MODEL — IF + Rules (Coverage-Based Fallback ensemble)")
     print("5 Typologies — AML-indicator-DB.xlsx")
     print("=" * 70)
-    print(f"\nEnsemble weights:  IF={args.w_if}  |  Dynamic(IF×Rule)={args.w_rule}  |  Cluster={args.w_cluster}")
-    print(f"KMeans input:      Dynamic scores (IF×Rule per typology, 5D)")
+    print(f"\nEnsemble: norm_dynamic + (1−coverage) × IF_weighted")
+    print(f"KMeans:   runs on 5D dynamic-score space; output is metadata only")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
-    print(f"Typology weights:  {tw} (used for IF weighted score only)")
-    print("(Asymmetric gating: IF catches zero-days, dynamic term amplifies corroborated risk)")
+    print(f"Typology weights (IF layer): {tw}")
+    print("(FINTRAC/FinCEN thresholds grounded — weights reflect IF validation ROC-AUC)")
 
     # ── Load ───────────────────────────────────────────────────────────────
     print("\nLoading data...")
@@ -1215,10 +1216,24 @@ def main():
           f"p95={np.percentile(cluster_score, 95):.3f}  "
           f"max={cluster_score.max():.3f}")
 
-    # ── Ensemble fusion (Option C — Asymmetric Gating) ─────────────────────
+    # ── Ensemble fusion: Coverage-Based Fallback ───────────────────────
+    # final_score = dynamic_score_norm
+    #             + (1 - coverage) × if_score_weighted
+    #
+    # Where:
+    #   dynamic_score_norm  = normalised sum of (IF_i × Rule_i) across typologies
+    #   coverage            = fraction of typologies with at least one rule fired
+    #   if_score_weighted   = traditional IF weighted score (zero-day catcher)
+    #
+    # If coverage=1.0 (all typologies have rules): IF contributes 0 additively —
+    #   it is already fully embedded as multipliers inside dynamic_score_norm.
+    # If coverage=0.0 (no rules fire at all): IF carries the entire score,
+    #   preserving zero-day anomaly detection.
+    # Partial coverage pro-rates the IF contribution to fill exactly the gap
+    #   that the rule engine leaves behind.
     print("\n" + "-" * 70)
-    print("Ensemble fusion (Asymmetric Gating)...")
-    print("  final = 0.50 * IF_weighted  +  0.35 * norm_dynamic  +  0.15 * cluster")
+    print("Ensemble fusion (Coverage-Based Fallback)...")
+    print("  final = dynamic_score_norm + (1 − coverage) × if_score_weighted")
     print("-" * 70)
 
     merge_cluster = df_cluster[["customer_id", "cluster",
@@ -1230,14 +1245,17 @@ def main():
         .merge(merge_cluster, on="customer_id", how="inner")
     )
 
-    # Asymmetric Gating final score:
-    #   - 0.50 * IF_weighted:    preserves zero-day anomaly catching
-    #   - 0.35 * dynamic_norm:   corroboration amplifier (IF AND Rules agree)
-    #   - 0.15 * cluster_score:  cohort-level evidence from dynamic clusters
+    # Coverage: fraction of 5 typologies where rule_score > 0
+    hybrid["coverage"] = sum(
+        (hybrid[rc] > 0).astype(float)
+        for rc in rule_cols
+        if rc in hybrid.columns
+    ) / len(rule_cols)
+
+    # Raw ensemble: dynamic corroboration + gap-filling IF baseline
     hybrid["final_hybrid_score"] = (
-        hybrid["if_score_weighted"]   * args.w_if      +
-        hybrid["dynamic_score_norm"]  * args.w_rule    +
-        hybrid["cluster_score"]       * args.w_cluster
+        hybrid["dynamic_score_norm"] +
+        (1.0 - hybrid["coverage"]) * hybrid["if_score_weighted"]
     )
 
     # Normalise to [0, 1]
@@ -1248,9 +1266,18 @@ def main():
     hybrid = hybrid.sort_values("final_hybrid_score", ascending=False).reset_index(drop=True)
     hybrid["hybrid_risk_category"] = hybrid["final_hybrid_score"].apply(risk_category)
 
+    print(f"\n  Coverage distribution:")
+    print(f"    mean={hybrid['coverage'].mean():.3f}  "
+          f"p25={hybrid['coverage'].quantile(0.25):.2f}  "
+          f"p50={hybrid['coverage'].median():.2f}  "
+          f"p75={hybrid['coverage'].quantile(0.75):.2f}")
+    print(f"    Customers with full coverage (all 5 typologies): "
+          f"{(hybrid['coverage']==1.0).sum():,}")
+    print(f"    Customers with zero coverage (no rules fired):   "
+          f"{(hybrid['coverage']==0.0).sum():,}")
     print(f"\n  Component correlations with final score:")
-    for col in ["if_score_weighted", "dynamic_score_norm", "cluster_score",
-                "rule_score_weighted", "cluster_risk_tier"]:
+    for col in ["if_score_weighted", "dynamic_score_norm", "coverage",
+                "rule_score_weighted", "cluster_score"]:
         if col in hybrid.columns:
             print(f"    {col:<30}: r={hybrid[col].corr(hybrid['final_hybrid_score']):.3f}")
 
@@ -1297,14 +1324,13 @@ def main():
         print(f"\n  Suspicious customer breakdown:")
         print(f"  {'#':>3}  {'Rank':>7}  {'Hybrid':>7}  {'IF_w':>6}  "
               f"{'Rule':>6}  {'ClsScr':>7}  {'Tier':>4}  Typology")
-        print(f"  {'-'*85}")
+        print(f"  {'-'*90}")
         for i, (idx, row) in enumerate(susp.iterrows(), 1):
             print(f"  {i:>3}  {idx+1:>7,}  {row['final_hybrid_score']:>7.3f}  "
                   f"{row['if_score_weighted']:>6.3f}  "
-                  f"{row['rule_score_weighted']:>6.3f}  "
-                  f"{row['cluster_score']:>7.3f}  "
-                  f"{row['cluster_risk_tier']:>4.1f}  "
-                  f"{str(row['cluster_primary_typology'])[:35]}")
+                  f"{row.get('dynamic_score_norm', 0.0):>7.3f}  "
+                  f"{row['coverage']:>5.2f}  "
+                  f"{str(row.get('cluster_primary_typology', 'N/A'))[:30]}")
 
     # ── LLM Indicator Trace (Dynamic Alignment) ───────────────────────────
     # The rule_indicator_trace is already embedded in hybrid via rule_out.
@@ -1363,10 +1389,13 @@ def main():
 
     evidence_cols = (
         ["customer_id", "final_hybrid_score", "hybrid_risk_category",
+         "coverage",
          "cluster_primary_typology", "primary_rule_typology",
-         "if_score_weighted", "if_score_max", "rule_score_weighted",
-         "rules_triggered", "cluster_risk_tier", "rule_indicator_trace"]
-        + avail_if_cols + rule_cols
+         "if_score_weighted", "if_score_max",
+         "dynamic_score_norm", "dynamic_score_raw",
+         "rule_score_weighted", "rules_triggered",
+         "cluster_risk_tier", "cluster_score", "rule_indicator_trace"]
+        + avail_if_cols + rule_cols + dynamic_cols
     )
     hybrid[[c for c in evidence_cols if c in hybrid.columns]]\
         [hybrid["final_hybrid_score"] > 0.60]\
@@ -1386,9 +1415,9 @@ def main():
     print(f"   Score range:         [{results['risk_score'].min():.3f}, "
           f"{results['risk_score'].max():.3f}]")
     print(f"\n   Output files:")
-    print(f"     results.csv                ← competition submission")
-    print(f"     hybrid_model_results.csv   ← full scored table")
-    print(f"     high_risk_evidence.csv     ← investigator evidence")
+    print(f"     results.csv                ← scored customers")
+    print(f"     hybrid_model_results.csv   ← scored customers with all features")
+    print(f"     high_risk_evidence.csv     ← high risk customers explanation inputs")
 
 
 if __name__ == "__main__":

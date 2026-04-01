@@ -7,8 +7,6 @@ aml/
 
 # --- Secrets ---
 .env
-.gitignore
-run_test.py
 
 # --- Python ---
 __pycache__/

@@ -1,456 +1,559 @@
-# =============================================================================
-# AML EXPLANATION ENGINE
-# =============================================================================
+"""
+04_explanation_model.py
+=======================
+Generate AML analyst explanations from high-risk evidence records stored in a
+Hugging Face dataset.
 
-# ==============================================================================
-# BLOCK 1 — CONFIGURATION
-# All secrets and paths are loaded from .env (see .env.example for the full list).
-# Copy .env.example → .env and fill in your real values before running.
-# ==============================================================================
+Input:
+    outputs/high_risk_evidence.csv
 
-from dotenv import load_dotenv
+Output:
+    outputs/model_output_explanations.csv
+
+Each run processes up to MAX_CUSTOMERS_PER_RUN customers from
+high_risk_evidence.csv in a single LLM call.
+"""
+
+import csv
+import io
+import json
 import os
+import re
+import sys
+import tempfile
+import time
+from pathlib import Path
+from urllib.parse import urlparse
 
-load_dotenv()  # Reads .env from the current directory
+import pandas as pd
+from dotenv import load_dotenv
+from huggingface_hub import HfApi, hf_hub_download
 
-# Backend selection — set MODEL_BACKEND in .env to "gemini" or "local_llm"
+load_dotenv()
+sys.stdout.reconfigure(line_buffering=True)
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 MODEL_BACKEND = os.getenv("MODEL_BACKEND", "gemini")
 
-# Hugging Face
-HF_TOKEN        = os.getenv("HF_TOKEN")         # Set in .env
-HF_DATASET_REPO = os.getenv("HF_DATASET_REPO")  # Set in .env
+HF_TOKEN = os.getenv("HF_TOKEN")
+HF_DATASET_REPO = os.getenv("HF_DATASET_REPO")
+DEFAULT_HF_DATASET_REPO = "scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai"
 
-# Gemini (only used if MODEL_BACKEND == "gemini")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")    # Set in .env
-# Rate-limit settings (gemini-2.0-flash free tier: 15 RPM / 20 RPD)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SECONDS_BETWEEN_CALLS = int(os.getenv("SECONDS_BETWEEN_CALLS", "5"))
 MAX_CUSTOMERS_PER_RUN = int(os.getenv("MAX_CUSTOMERS_PER_RUN", "1"))
 
-# Local LLM (only used if MODEL_BACKEND == "local_llm")
 GGUF_LOCAL_PATH = os.getenv("GGUF_LOCAL_PATH", "./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf")
-GGUF_HF_REPO    = os.getenv("GGUF_HF_REPO",    "bartowski/Llama-3.2-3B-Instruct-GGUF")
-GGUF_FILENAME   = os.getenv("GGUF_FILENAME",    "Llama-3.2-3B-Instruct-Q4_K_M.gguf")
+GGUF_HF_REPO = os.getenv("GGUF_HF_REPO", "bartowski/Llama-3.2-3B-Instruct-GGUF")
+GGUF_FILENAME = os.getenv("GGUF_FILENAME", "Llama-3.2-3B-Instruct-Q4_K_M.gguf")
 
-# HF paths for input files (relative paths inside HF_DATASET_REPO)
-HF_MODEL_OUTPUT_PATH      = os.getenv("HF_MODEL_OUTPUT_PATH",      "models/model_output.csv")
-HF_ISOLATION_RESULTS_PATH = os.getenv("HF_ISOLATION_RESULTS_PATH", "models/isolation_forest_results.csv")
-HF_FEATURES_PATH          = os.getenv("HF_FEATURES_PATH",          "features/customer_features_engineered.csv")
-HF_AML_LIBRARY_PATH       = os.getenv("HF_AML_LIBRARY_PATH",       "AML_RedFlags_Database.xlsx")
+HF_HIGH_RISK_EVIDENCE_PATH = os.getenv(
+    "HF_HIGH_RISK_EVIDENCE_PATH",
+    "outputs/high_risk_evidence.csv",
+)
+HF_EXPLANATION_OUTPUT_PATH = os.getenv(
+    "HF_EXPLANATION_OUTPUT_PATH",
+    "outputs/model_output_explanations.csv",
+)
 
-# Output path (relative path inside HF_DATASET_REPO where explanations will be uploaded)
-HF_EXPLANATION_OUTPUT_PATH = os.getenv("HF_EXPLANATION_OUTPUT_PATH", "models/model_output_explanations.csv")
+SYSTEM_PROMPT = """You are an expert Anti-Money Laundering (AML) explanation writer embedded in a financial intelligence pipeline. Your sole task is to read structured customer evidence records and produce a concise, professional, plain-language narrative for each customer that an AML analyst can immediately act on.
+
+You are not a scoring model. You do not re-score, disagree with, or second-guess the risk scores you receive. Your job is to translate machine-generated evidence into a coherent investigative summary.
 
 
-# ==============================================================================
-# BLOCK 2 — IMPORTS & HF SETUP
-# ==============================================================================
+== INPUT FORMAT ==
 
-import pandas as pd
-import time
-import re
-from pathlib import Path
-from huggingface_hub import hf_hub_download, HfApi
+You will receive a JSON array. Each element represents one flagged customer and contains the following fields:
+
+customer_id: Unique customer identifier.
+final_hybrid_score: Ensemble risk score from 0.0 to 1.0. All customers in this batch exceed 0.60.
+hybrid_risk_category: Score band label — Very High or High.
+coverage: Data completeness ratio. 0.0 means full transaction history is available. 1.0 means no transaction history exists and the score is derived entirely from profile-based fallback heuristics. Values in between indicate partial history.
+primary_rule_typology: The single typology domain where the customer scored highest under deterministic rules.
+rules_triggered: Total count of hard regulatory flags tripped.
+rule_indicator_trace: The exact list of rules fired with severity codes, e.g. "human_trafficking: R_HT_02(H) | structuring: R_ST_01(M)". This is your primary evidence source.
+rule_human_trafficking: Count of human trafficking rules triggered.
+rule_structuring_layering: Count of structuring and layering rules triggered.
+rule_behavioural_profile: Count of behavioural and profile anomaly rules triggered.
+rule_trade_shell: Count of trade-based ML and shell entity rules triggered.
+rule_cross_border_geo: Count of cross-border and geographic risk rules triggered.
+if_score_max: Severity of the customer's single most anomalous behavioural pattern, from 0.0 to 1.0.
+if_score_human_trafficking: Isolation forest anomaly score for human trafficking behaviour.
+if_score_structuring_layering: Isolation forest anomaly score for structuring and layering behaviour.
+if_score_behavioural_profile: Isolation forest anomaly score for behavioural and profile anomalies.
+if_score_trade_shell: Isolation forest anomaly score for trade-based ML and shell entity behaviour.
+if_score_cross_border_geo: Isolation forest anomaly score for cross-border and geographic risk behaviour.
+cluster_primary_typology: The dominant AML typology of the peer cluster this customer belongs to.
+cluster_risk_tier: Baseline risk level of that peer cluster.
+
+
+== AML INDICATOR REFERENCE ==
+
+When writing explanations, you must cite indicators from the table below using their Indicator Id. Only cite indicators that are genuinely supported by the evidence fields you have received. Do not cite indicators absent from this list. Do not invent indicator IDs. If a rule ID in rule_indicator_trace does not map to an indicator in this list, do not cite it.
+
+-- Structuring & Layering --
+ATYPICAL-006 | Temporal Transaction Pattern | Suspicious pattern emerges from client's transactions (e.g. same time of day) | Risk: Medium
+ATYPICAL-007 | Quick In-Out | Atypical transfers by client on in-and-out basis, or cash deposit followed immediately by wire transfer out | Risk: High
+ATYPICAL-008 | Same-Day Turnover | Funds transferred in and out of account on same day or within relatively short period | Risk: High
+BEHAV-001 | Location Hopping | Client conducts transactions at different physical locations | Risk: Medium
+PROF-006 | Fund Movement | Large and/or rapid movement of funds not commensurate with client's financial profile | Risk: High
+PROF-007 | Round Sums | Rounded sum transactions atypical of what would be expected from client | Risk: Low
+STRUCT-001 | Cash Structuring | Multiple cash deposits below $10,000 within short timeframe to avoid reporting requirements | Risk: High
+STRUCT-006 | Short Period Multiple Transactions | Multiple transactions conducted below reporting threshold within short period | Risk: High
+
+-- Behavioural & Profile Anomalies --
+ACCT-001 | Dormant Activation | Inactive account begins to see financial activity (deposits, wire transfers, withdrawals) | Risk: Medium
+ACCT-002 | Periodic Patterns | Accounts receive periodical deposits and are inactive at other periods without logical explanation | Risk: Medium
+ACCT-003 | Credit Surge | Sudden increase in credit card usage or applications for new credit | Risk: Medium
+ACCT-004 | Abrupt Change | Abrupt change in account activity | Risk: Medium
+PROD-008 | Credit Card Abuse | Credit card transactions and payments exceptionally high including excessive cash advances, balance transfers, or luxury items | Risk: High
+PROF-001 | Activity vs Expectation | Transactional activity far exceeds projected activity at account opening or relationship beginning | Risk: High
+PROF-002 | Financial Standing | Transactional activity inconsistent with client's apparent financial standing, usual pattern, or occupation | Risk: High
+PROF-003 | Geographic Volume | Volume of transactional activity exceeds norm for geographical area | Risk: Medium
+PROF-005 | Living Beyond Means | Client appears to be living beyond their means; significantly more spending than income | Risk: Medium
+PROF-008 | Transaction Type/Size | Size or type of transactions atypical of what is expected from client | Risk: Medium
+PROF-010 | Sudden Change | Sudden change in client's financial profile, pattern of activity or transactions | Risk: High
+
+-- Trade-Based ML & Shell Entities --
+GATE-001 | Atypical Account Use | Gatekeeper utilizing their account for transactions not typical of their business | Risk: High
+PML-TBML-02 | Sector Deviation | Entity has business activities or a model that is outside the norm for its sector | Risk: Medium
+PML-TBML-03 | Counterparty Risk | The entity transacts with a large number of entities in high-volume, high-demand, or unrelated sectors | Risk: High
+PML-TBML-04 | Volume Spike | Entity receives a sudden inflow of large-value electronic funds transfers | Risk: High
+PML-TBML-08 | Round Sums | Orders or receives payments for goods in round figures or in increments of approximately US$50,000 | Risk: High
+PROF-004 | Business Activity | Transactional activity inconsistent with declared business | Risk: High
+
+-- Cross-Border & Geographic Risk --
+GEO-001 | Drug Jurisdictions | Transactions with jurisdictions known to produce or transit drugs or precursor chemicals | Risk: High
+GEO-002 | High ML/TF Risk | Transactions with jurisdictions known to be at higher risk of ML/TF | Risk: High
+GEO-003 | Locations of Concern | Transaction/business activity involving locations of concern (ongoing conflicts, weak ML/TF controls) | Risk: High
+GEO-004 | FATF Non-Cooperative | Transactions involving countries deemed high risk or non-cooperative by FATF | Risk: High
+GEO-005 | Frequent Overseas Transfers | Client makes frequent overseas transfers not in line with their financial profile | Risk: Medium
+WIRE-008 | Volume Mismatch | Large wire transfers or high volume through account that does not fit expected pattern | Risk: High
+WIRE-010 | Multiple Senders/Receivers | Client sending to or receiving wire transfers from multiple clients | Risk: Medium
+
+-- Human Trafficking --
+HT-SEX-01 | Retail & Gift Card Anomalies | Rounded sum purchases at grocery stores and/or other retailers that sell gift cards and/or prepaid credit cards | Risk: Medium
+HT-SEX-02 | Retail & Gift Card Anomalies | Atypical high-value purchases at convenience stores (likely for gift cards or money transfers) | Risk: Medium
+HT-SEX-03 | Lifestyle & Luxury Spend | Luxury purchases inconsistent with reported income or occupation | Risk: High
+HT-SEX-04 | Logistics & Victim Maintenance | Frequent low-value payments for parking | Risk: Low
+HT-SEX-05 | Logistics & Victim Maintenance | Frequent purchases for food delivery services (often multiple times per day) | Risk: Low
+HT-SEX-06 | Digital Integration | Transfers to virtual currency, online gambling, or investments | Risk: Medium
+HT-SEX-07 | Geographic & Travel Patterns | Location of accommodation bookings corresponds to location of cash deposits across multiple cities | Risk: High
+HT-SEX-08 | Geographic & Travel Patterns | Payments to online accommodation or travel websites in non-residential cities | Risk: Medium
+HT-SEX-10 | International Recruitment & Travel | Large international travel purchases targeting high-risk source countries | Risk: High
+HT-SEX-12 | Illicit Storefront Operations | Merchant POS transactions at Spa/Massage/Escort establishments after business hours (10 PM to 6 AM) | Risk: High
+HT-SEX-13 | Asset Procurement & Management | Multiple real estate purchases or high-value transfers disproportionate to reported income | Risk: High
+HT-SEX-14 | Asset Procurement & Management | Monthly payments to multiple individuals or entities involved in residential rentals | Risk: Medium
+
+
+== OUTPUT FORMAT ==
+
+Output a CSV with exactly two columns: customer_id and explanation.
+
+The first row must be the header: customer_id,explanation
+
+Each subsequent row contains one customer. The explanation field must be wrapped in double-quotes. Any double-quote character that appears inside the explanation text must be escaped as two consecutive double-quotes ("").
+
+Example of correct CSV structure:
+customer_id,explanation
+C-00412,"This customer's activity is most consistent with..."
+C-00887,"The primary concern for this customer is..."
+
+Do not output anything before the header row. Do not output anything after the last customer row. Do not add commentary, summaries, or blank lines between rows.
+
+
+== EXPLANATION RULES ==
+
+Each explanation is a single paragraph of 3 to 5 sentences written in plain English for a trained AML analyst. The explanation must not exceed 2,000 characters including the header line for that customer.
+
+1. LEAD WITH THE DOMINANT CONCERN. Open with the primary typology. State what the overall pattern suggests before citing any specifics.
+
+2. CITE INDICATORS BY ID. When referencing a red flag, name it naturally and append the indicator ID in parentheses. Example: "The customer shows signs of cash structuring (STRUCT-001), with multiple sub-threshold deposits spread across short periods." Only cite indicators genuinely supported by the evidence you have received.
+
+3. TRANSLATE SCORES INTO PLAIN LANGUAGE. Do not write raw decimal values from anomaly scores. Use relative language: "a notably elevated anomaly signature", "the strongest behavioural signal", "a secondary but corroborating pattern". Reserve superlatives for if_score_max values above 0.80.
+
+4. USE PEER CONTEXT PURPOSEFULLY. If cluster_primary_typology aligns with the rule evidence, briefly note that the customer's behaviour is consistent with a known high-risk peer group. If it diverges, note the discrepancy as an additional reason for scrutiny.
+
+5. FLAG LOW COVERAGE. If coverage is 0.60 or above, you must include this sentence verbatim: "Note: limited transaction history is available for this customer; the risk assessment relies partly on profile-based heuristics and should be weighted accordingly."
+
+6. DO NOT SPECULATE. Do not assert that money laundering or trafficking has occurred. Use hedged language: "is consistent with", "suggests", "warrants investigation for", "may indicate".
+
+7. MENTION CO-OCCURRING TYPOLOGIES. If two or more domains have a rule count above 0 or an isolation forest score above 0.50, note the secondary typology. This helps the analyst understand whether this is a single-typology case or a multi-scheme profile.
+
+8. NEVER EXPOSE INTERNALS. Do not mention field names, model names, cluster IDs, raw score decimals, or any system architecture detail in the output.
+
+9. IF rules_triggered IS 0 BUT anomaly scores are elevated, reflect that the flag is anomaly-driven rather than rule-confirmed and apply appropriately cautious language.
+
+10. IF A FIELD IS NULL OR MISSING for a given customer, omit that dimension from the narrative entirely. Do not fabricate values."""
+
+INPUT_FIELDS = [
+    "customer_id",
+    "final_hybrid_score",
+    "hybrid_risk_category",
+    "coverage",
+    "primary_rule_typology",
+    "rules_triggered",
+    "rule_indicator_trace",
+    "rule_human_trafficking",
+    "rule_structuring_layering",
+    "rule_behavioural_profile",
+    "rule_trade_shell",
+    "rule_cross_border_geo",
+    "if_score_max",
+    "if_score_human_trafficking",
+    "if_score_structuring_layering",
+    "if_score_behavioural_profile",
+    "if_score_trade_shell",
+    "if_score_cross_border_geo",
+    "cluster_primary_typology",
+    "cluster_risk_tier",
+]
+
+TRACE_TYPOLOGY_MAP = {
+    "struct": "rule_structuring_layering",
+    "structuring": "rule_structuring_layering",
+    "structuring_layering": "rule_structuring_layering",
+    "behav": "rule_behavioural_profile",
+    "behavioural": "rule_behavioural_profile",
+    "behavioural_profile": "rule_behavioural_profile",
+    "trade": "rule_trade_shell",
+    "trade_shell": "rule_trade_shell",
+    "geo": "rule_cross_border_geo",
+    "cross_border_geo": "rule_cross_border_geo",
+    "cross-border": "rule_cross_border_geo",
+    "ht": "rule_human_trafficking",
+    "human_trafficking": "rule_human_trafficking",
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def normalize_hf_repo_id(repo: str | None) -> str:
+    repo = (repo or "").strip()
+    if not repo:
+        return DEFAULT_HF_DATASET_REPO
+    if repo.startswith("https://") or repo.startswith("http://"):
+        parts = [p for p in urlparse(repo).path.strip("/").split("/") if p]
+        if len(parts) >= 3 and parts[0] == "datasets":
+            return "/".join(parts[1:3])
+    return repo
+
+
+def download_hf_csv(repo_id: str, token: str, path_in_repo: str) -> pd.DataFrame:
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=path_in_repo,
+        repo_type="dataset",
+        token=token,
+    )
+    return pd.read_csv(local_path)
+
+
+def upload_hf_file(api: HfApi, repo_id: str, token: str, local_path: Path, path_in_repo: str) -> None:
+    api.upload_file(
+        path_or_fileobj=str(local_path),
+        path_in_repo=path_in_repo,
+        repo_id=repo_id,
+        repo_type="dataset",
+        token=token,
+    )
+
+
+def normalize_value(value):
+    if pd.isna(value):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return str(value)
+
+
+def count_trace_indicators(trace: object) -> dict[str, int]:
+    counts = {
+        "rule_human_trafficking": 0,
+        "rule_structuring_layering": 0,
+        "rule_behavioural_profile": 0,
+        "rule_trade_shell": 0,
+        "rule_cross_border_geo": 0,
+    }
+    if pd.isna(trace) or not str(trace).strip():
+        return counts
+
+    for segment in str(trace).split("|"):
+        segment = segment.strip()
+        if ":" not in segment:
+            continue
+        prefix, items = segment.split(":", 1)
+        field_name = TRACE_TYPOLOGY_MAP.get(prefix.strip().lower())
+        if not field_name:
+            continue
+        counts[field_name] += len([item for item in items.split(",") if item.strip()])
+    return counts
+
+
+def build_input_record(row: pd.Series) -> dict:
+    trace_counts = count_trace_indicators(row.get("rule_indicator_trace"))
+    record = {
+        "customer_id": normalize_value(row.get("customer_id")),
+        "final_hybrid_score": normalize_value(row.get("final_hybrid_score")),
+        "hybrid_risk_category": normalize_value(row.get("hybrid_risk_category")),
+        "coverage": normalize_value(row.get("coverage")),
+        "primary_rule_typology": normalize_value(row.get("primary_rule_typology")),
+        "rules_triggered": normalize_value(row.get("rules_triggered")),
+        "rule_indicator_trace": normalize_value(row.get("rule_indicator_trace")),
+        "rule_human_trafficking": trace_counts["rule_human_trafficking"],
+        "rule_structuring_layering": trace_counts["rule_structuring_layering"],
+        "rule_behavioural_profile": trace_counts["rule_behavioural_profile"],
+        "rule_trade_shell": trace_counts["rule_trade_shell"],
+        "rule_cross_border_geo": trace_counts["rule_cross_border_geo"],
+        "if_score_max": normalize_value(row.get("if_score_max")),
+        "if_score_human_trafficking": normalize_value(row.get("if_score_human_trafficking")),
+        "if_score_structuring_layering": normalize_value(row.get("if_score_structuring_layering")),
+        "if_score_behavioural_profile": normalize_value(row.get("if_score_behavioural_profile")),
+        "if_score_trade_shell": normalize_value(row.get("if_score_trade_shell")),
+        "if_score_cross_border_geo": normalize_value(row.get("if_score_cross_border_geo")),
+        "cluster_primary_typology": normalize_value(row.get("cluster_primary_typology")),
+        "cluster_risk_tier": normalize_value(row.get("cluster_risk_tier")),
+    }
+    return {field: record.get(field) for field in INPUT_FIELDS}
+
+
+def strip_code_fences(text: str) -> str:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+    return cleaned.strip()
+
+
+def parse_llm_csv(text: str, expected_ids: list[str]) -> list[dict[str, str]]:
+    cleaned = strip_code_fences(text)
+    if not cleaned:
+        raise ValueError("Model returned an empty response.")
+
+    reader = csv.reader(io.StringIO(cleaned))
+    rows = [row for row in reader if row]
+    if not rows:
+        raise ValueError("Model returned no CSV rows.")
+
+    header = [cell.strip() for cell in rows[0]]
+    if header != ["customer_id", "explanation"]:
+        raise ValueError(f"Unexpected CSV header: {header}")
+
+    parsed = []
+    for row in rows[1:]:
+        if len(row) != 2:
+            raise ValueError(f"Malformed CSV row: {row}")
+        parsed.append({
+            "customer_id": row[0].strip(),
+            "explanation": row[1].replace("\r", " ").replace("\n", " ").strip(),
+        })
+
+    parsed_ids = [row["customer_id"] for row in parsed]
+    if len(parsed_ids) != len(expected_ids):
+        raise ValueError(f"Expected {len(expected_ids)} rows, got {len(parsed_ids)}.")
+    if set(parsed_ids) != set(expected_ids):
+        raise ValueError(f"Response customer IDs did not match request batch: {parsed_ids}")
+
+    parsed_map = {row["customer_id"]: row["explanation"] for row in parsed}
+    return [{"customer_id": customer_id, "explanation": parsed_map[customer_id]} for customer_id in expected_ids]
+
+
+def render_output_csv(explanations: list[dict[str, str]]) -> str:
+    lines = ["customer_id,explanation"]
+    for row in explanations:
+        customer_id = str(row["customer_id"])
+        explanation = str(row["explanation"]).replace('"', '""').replace("\r", " ").replace("\n", " ").strip()
+        lines.append(f'{customer_id},"{explanation}"')
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Backend initialisation
+# ---------------------------------------------------------------------------
 
 if MODEL_BACKEND == "gemini":
     import google.generativeai as genai
+
+    if not GEMINI_API_KEY:
+        raise ValueError("GEMINI_API_KEY is required when MODEL_BACKEND=gemini.")
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    MODEL = genai.GenerativeModel(
+        "gemini-2.5-flash",
+        system_instruction=SYSTEM_PROMPT,
+    )
 elif MODEL_BACKEND == "local_llm":
     from llama_cpp import Llama
 
-
-# ==============================================================================
-# BLOCK 3 — DOWNLOAD INPUT FILES FROM HF (replaces all GDrive reads)
-# ==============================================================================
-
-results_df = pd.read_csv(
-    hf_hub_download(repo_id=HF_DATASET_REPO, filename=HF_MODEL_OUTPUT_PATH,
-                    repo_type="dataset", token=HF_TOKEN)
-)
-
-isolation_df = pd.read_csv(
-    hf_hub_download(repo_id=HF_DATASET_REPO, filename=HF_ISOLATION_RESULTS_PATH,
-                    repo_type="dataset", token=HF_TOKEN)
-)
-
-df = pd.read_csv(
-    hf_hub_download(repo_id=HF_DATASET_REPO, filename=HF_FEATURES_PATH,
-                    repo_type="dataset", token=HF_TOKEN)
-)
-
-aml_library = pd.read_excel(
-    hf_hub_download(repo_id=HF_DATASET_REPO, filename=HF_AML_LIBRARY_PATH,
-                    repo_type="dataset", token=HF_TOKEN)
-)
-aml_library = aml_library.dropna(subset=["Red_Flag_Description"])
-aml_library = aml_library[aml_library["Indicator_ID"].notna()].iloc[0:63]
-
-
-# ==============================================================================
-# BLOCK 4 — PRE-DOWNLOAD GGUF MODEL (local_llm only)
-# Skips download if the file already exists locally.
-# ==============================================================================
-
-if MODEL_BACKEND == "local_llm":
     if not Path(GGUF_LOCAL_PATH).exists():
         print("GGUF model not found locally. Downloading from Hugging Face...")
         Path(GGUF_LOCAL_PATH).parent.mkdir(parents=True, exist_ok=True)
         hf_hub_download(
             repo_id=GGUF_HF_REPO,
             filename=GGUF_FILENAME,
-            local_dir=str(Path(GGUF_LOCAL_PATH).parent)
+            local_dir=str(Path(GGUF_LOCAL_PATH).parent),
         )
         print(f"Model downloaded to: {GGUF_LOCAL_PATH}")
-    else:
-        print(f"GGUF model found at {GGUF_LOCAL_PATH}, skipping download.")
 
-
-# ==============================================================================
-# BLOCK 5 — SHARED COMPONENTS (identical for both backends)
-# ==============================================================================
-
-# ------------------------------------------------------------------
-# AML Indicator Library summary
-# ------------------------------------------------------------------
-def build_library_summary(library_df):
-    lines = []
-    for _, row in library_df.iterrows():
-        line = (
-            f"[{row['Indicator_ID']}] {row['Indicator_Category']} > {row['Sub_Category']}: "
-            f"{row['Red_Flag_Description']} "
-            f"(Threshold: {row['Quantifiable_Threshold']}; "
-            f"Tx Types: {row['Transaction_Type']}; "
-            f"Risk Level: {row['Risk_Level']})"
-        )
-        lines.append(line)
-    return "\n".join(lines)
-
-LIBRARY_SUMMARY = build_library_summary(aml_library)
-
-# ------------------------------------------------------------------
-# Feature labels
-# ------------------------------------------------------------------
-FEATURE_LABELS = {
-    "total_credit_amount":              "total money received",
-    "total_debit_amount":               "total money sent",
-    "avg_credit_amount":                "average incoming transaction size",
-    "avg_debit_amount":                 "average outgoing transaction size",
-    "max_credit_amount":                "largest single incoming transaction",
-    "max_debit_amount":                 "largest single outgoing transaction",
-    "credit_debit_ratio":               "ratio of money in vs money out",
-    "transaction_count":                "total number of transactions",
-    "credit_count":                     "number of incoming transactions",
-    "debit_count":                      "number of outgoing transactions",
-    "transactions_per_day":             "transactions per day",
-    "unique_counterparties":            "number of different counterparties",
-    "weekend_transaction_ratio":        "proportion of transactions on weekends",
-    "night_transaction_ratio":          "proportion of transactions at night",
-    "rapid_turnaround_count":           "number of rapid in-then-out fund movements",
-    "avg_days_between_transactions":    "average days between transactions",
-    "cash_transaction_ratio":           "proportion of cash transactions",
-    "atm_transaction_ratio":            "proportion of ATM transactions",
-    "international_transaction_ratio":  "proportion of international transactions",
-    "wire_transaction_ratio":           "proportion of wire transfers",
-    "structuring_indicator":            "structuring risk score",
-    "round_amount_ratio":               "proportion of suspiciously round transaction amounts",
-    "below_threshold_ratio":            "proportion of transactions just below reporting thresholds",
-    "churn_ratio":                      "fund churn ratio (in vs out speed)",
-    "income_to_credit_ratio":           "income vs actual credits ratio",
-    "account_age_days":                 "how long the account has been open",
-}
-
-# ------------------------------------------------------------------
-# Feature columns
-# ------------------------------------------------------------------
-all_cols = df.columns.tolist()
-
-exclude_cols = [
-    'customer_id',
-    'label',
-    'first_transaction_date',
-    'last_transaction_date',
-    'date',
-    'transaction_datetime',
-    'birth_date',
-    'onboard_date',
-    'established_date',
-    'customer_type',
-    'occupation',
-    'industry',
-    'day_name',
-    'time_of_day',
-    'year_month'
-]
-
-feature_cols = []
-for col in all_cols:
-    if col not in exclude_cols:
-        if pd.api.types.is_numeric_dtype(df[col]):
-            feature_cols.append(col)
-        else:
-            print(f"Skipping non-numeric column: {col} (type: {df[col].dtype})")
-
-# ------------------------------------------------------------------
-# Feature extractor
-# ------------------------------------------------------------------
-def extract_notable_features(customer_row, top_n=10):
-    notes = []
-    for feat in feature_cols:
-        if feat not in customer_row.index:
-            continue
-        val = customer_row[feat]
-        pop_mean = df[feat].mean()
-        pop_std  = df[feat].std()
-        if pop_std == 0:
-            continue
-        z = (val - pop_mean) / pop_std
-        label = FEATURE_LABELS.get(feat, feat.replace("_", " "))
-        notes.append((abs(z), z, label, val, pop_mean))
-
-    notes.sort(key=lambda x: x[0], reverse=True)
-
-    lines = []
-    for _, z, label, val, avg in notes[:top_n]:
-        direction = "higher" if z > 0 else "lower"
-        lines.append(
-            f"- {label.capitalize()}: {val:.2f} "
-            f"({'%.2f' % abs(z)}x {direction} than the typical customer average of {avg:.2f})"
-        )
-    return "\n".join(lines) if lines else "No standout features identified."
-
-# ------------------------------------------------------------------
-# Prompts
-# ------------------------------------------------------------------
-SYSTEM_PROMPT = f"""You are an AML (Anti-Money Laundering) compliance expert writing risk
-summaries for bank investigators. Your audience understands AML concepts but has NO
-knowledge of machine learning or statistics.
-
-You have access to the following AML Red Flag Indicator Library:
-{LIBRARY_SUMMARY}
-
-Your task: Given data about a customer and their model risk score, write a SHORT professional summary of no more than 3 short paragraphs (2000 characters):
-1. States clearly whether the customer was flagged for AML review or not, and their risk level.
-2. Explains, in plain terms, which specific behavioural patterns in their account data
-   triggered concern — or why none did. Maps those patterns to the most relevant red flag indicators from the library above
-   (cite the Indicator IDs in brackets, e.g. [CMLN-MULE-01]). Explains what these patterns could indicate in an AML context.
-3. Ends with a clear recommended next step for the investigator.
-
-
-Do NOT use headers, bullet points, or bold text in your response. Write in plain prose only.
-Only mention terrorist financing if a terrorism-related indicator is explicitly matched.
-Do NOT mention machine learning, isolation forest, anomaly scores, z-scores, or any
-statistical jargon. Write as if you personally reviewed the account activity."""
-
-def build_user_prompt(customer_id, risk_score, risk_category, prediction, feature_notes):
-    flagged_text = "FLAGGED for AML review" if prediction == 1 else "NOT flagged for AML review"
-    return f"""Customer ID: {customer_id}
-Model Decision: {flagged_text}
-Risk Level: {risk_category} (Risk Score: {risk_score:.3f})
-
-Key account behaviours identified (compared to all customers):
-{feature_notes}
-
-Please write the AML risk explanation for this customer."""
-
-
-# ==============================================================================
-# BLOCK 6 — BACKEND INITIALISATION
-# ==============================================================================
-
-if MODEL_BACKEND == "gemini":
-    genai.configure(api_key=GEMINI_API_KEY)
-    model_gemini = genai.GenerativeModel("gemini-2.5-flash")
-
-elif MODEL_BACKEND == "local_llm":
-    print("Loading model into memory...")
-    llm = Llama(
+    print("Loading local GGUF model...")
+    MODEL = Llama(
         model_path=GGUF_LOCAL_PATH,
-        n_ctx=5012,
+        n_ctx=8192,
         n_gpu_layers=-1,
-        verbose=False
+        verbose=False,
     )
-    print("Model loaded.")
+else:
+    raise ValueError("MODEL_BACKEND must be 'gemini' or 'local_llm'.")
 
 
-# ==============================================================================
-# BLOCK 7 — UNIFIED call_llm() WRAPPER
-# ==============================================================================
-
-def call_llm(system_prompt, user_prompt):
+def call_llm(user_message: str) -> str:
     if MODEL_BACKEND == "gemini":
-        explanation_text = "[ERROR: no response generated]"
+        last_error = "[ERROR: no response generated]"
         for attempt in range(3):
             try:
-                response = model_gemini.generate_content(
-                    contents=[
-                        {"role": "user", "parts": [system_prompt + "\n\n" + user_prompt]}
-                    ],
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.3
-                    )
+                response = MODEL.generate_content(
+                    user_message,
+                    generation_config=genai.types.GenerationConfig(temperature=0.2),
                 )
-                explanation_text = response.text.strip()
-                break
-
-            except Exception as e:
-                err_str = str(e)
-                if "429" in err_str:
+                text = getattr(response, "text", "")
+                if text and text.strip():
+                    return text.strip()
+                raise ValueError("Gemini returned an empty text response.")
+            except Exception as exc:
+                last_error = f"[ERROR: {exc}]"
+                err_str = str(exc)
+                if "429" in err_str and attempt < 2:
                     match = re.search(r"retry in ([\d.]+)s", err_str)
                     wait = float(match.group(1)) + 2 if match else 60
-                    if attempt == 2:
-                        explanation_text = "[ERROR: rate limit after 3 attempts]"
-                        break
-                    print(f"RATE LIMITED — waiting {wait:.0f}s then retrying (attempt {attempt+1}/3)...")
+                    print(f"Rate limited. Waiting {wait:.0f}s before retry {attempt + 2}/3...")
                     time.sleep(wait)
-                else:
-                    explanation_text = f"[ERROR: {err_str}]"
+                    continue
+                break
+        return last_error
+
+    try:
+        response = MODEL.create_chat_completion(
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=2048,
+            temperature=0.2,
+        )
+        return response["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        return f"[ERROR: {exc}]"
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    if not HF_TOKEN:
+        raise ValueError("HF_TOKEN is required.")
+
+    hf_repo = normalize_hf_repo_id(HF_DATASET_REPO)
+
+    print("=" * 70)
+    print(f"AML EXPLANATION ENGINE — Powered by {MODEL_BACKEND}")
+    print("=" * 70)
+    print(f"HF dataset repo:            {hf_repo}")
+    print(f"HF evidence input:          {HF_HIGH_RISK_EVIDENCE_PATH}")
+    print(f"HF explanation output:      {HF_EXPLANATION_OUTPUT_PATH}")
+    print(f"Total customers this run:   {MAX_CUSTOMERS_PER_RUN}")
+    if MODEL_BACKEND == "gemini":
+        print(f"Rate limit pause:           {SECONDS_BETWEEN_CALLS}s")
+
+    evidence_df = download_hf_csv(hf_repo, HF_TOKEN, HF_HIGH_RISK_EVIDENCE_PATH)
+    if evidence_df.empty:
+        print("\nNo high-risk evidence rows found. Writing header-only CSV.")
+        final_rows = []
+    else:
+        evidence_df = evidence_df.sort_values("final_hybrid_score", ascending=False).reset_index(drop=True)
+        if MAX_CUSTOMERS_PER_RUN > 0:
+            evidence_df = evidence_df.head(MAX_CUSTOMERS_PER_RUN).copy()
+        total_customers = len(evidence_df)
+        total_batches = 1 if total_customers > 0 else 0
+        print(f"\nCustomers queued: {total_customers:,} across {total_batches} batch(es)")
+
+        final_rows = []
+        errors = []
+        local_checkpoint = Path("./model_output_explanations_checkpoint.csv")
+
+        for batch_index, start in enumerate(range(0, len(evidence_df), len(evidence_df) or 1), 1):
+            batch_df = evidence_df.iloc[start:start + len(evidence_df)].copy()
+            expected_ids = batch_df["customer_id"].astype(str).tolist()
+            payload = [build_input_record(row) for _, row in batch_df.iterrows()]
+            user_message = json.dumps(payload, ensure_ascii=False)
+
+            print(f"\n[{batch_index}/{total_batches}] Explaining {len(batch_df)} customer(s): {expected_ids}")
+
+            batch_rows = None
+            last_error = None
+            for attempt in range(1, 4):
+                response_text = call_llm(user_message)
+                if response_text.startswith("[ERROR"):
+                    last_error = response_text
+                    print(f"  Attempt {attempt}/3 failed: {response_text}")
+                    continue
+                try:
+                    batch_rows = parse_llm_csv(response_text, expected_ids)
                     break
-        return explanation_text
+                except Exception as exc:
+                    last_error = str(exc)
+                    print(f"  Attempt {attempt}/3 returned invalid CSV: {exc}")
 
-    elif MODEL_BACKEND == "local_llm":
-        try:
-            response = llm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": user_prompt}
-                ],
-                max_tokens=512,
-                temperature=0.3,
-            )
-            return response["choices"][0]["message"]["content"].strip()
-        except Exception as e:
-            return f"[ERROR: {str(e)}]"
+            if batch_rows is None:
+                errors.append({"batch": batch_index, "customer_ids": expected_ids, "error": last_error})
+                for customer_id in expected_ids:
+                    batch_rows = (batch_rows or [])
+                    batch_rows.append({
+                        "customer_id": customer_id,
+                        "explanation": f"[ERROR: explanation generation failed for batch {batch_index}]",
+                    })
 
+            final_rows.extend(batch_rows)
+            checkpoint_text = render_output_csv(final_rows)
+            local_checkpoint.write_text(checkpoint_text, encoding="utf-8")
 
-# ==============================================================================
-# BLOCK 8 — MAIN EXPLANATION LOOP
-# ==============================================================================
+            if MODEL_BACKEND == "gemini" and batch_index < total_batches:
+                time.sleep(SECONDS_BETWEEN_CALLS)
 
-print("=" * 70)
-print(f"AML EXPLANATION ENGINE — Powered by {MODEL_BACKEND}")
-print("=" * 70)
-print(f"\nAML Indicator Library loaded: {len(aml_library)} indicators")
-print(f"Customers to explain: up to {MAX_CUSTOMERS_PER_RUN}")
+        print(f"\nErrors: {len(errors)}")
+        if errors:
+            print("Failed batches:")
+            for error in errors:
+                print(f"  Batch {error['batch']}: {error['customer_ids']} -> {error['error']}")
 
-# Gemini-only rate limit info
-if MODEL_BACKEND == "gemini":
-    print(f"Rate limit pause: {SECONDS_BETWEEN_CALLS}s between calls\n")
+    output_text = render_output_csv(final_rows)
 
-isolation_df = isolation_df.set_index("customer_id")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        local_output = Path(tmp_dir) / "model_output_explanations.csv"
+        local_output.write_text(output_text, encoding="utf-8")
+        api = HfApi()
+        upload_hf_file(api, hf_repo, HF_TOKEN, local_output, HF_EXPLANATION_OUTPUT_PATH)
 
-# Option 1 (local_llm) sorts on predicted_label; Option 2 (gemini) sorts on prediction.
-# Both columns represent the same thing — confirm column name matches your results_df.
-sort_col = "predicted_label" if MODEL_BACKEND == "local_llm" else "prediction"
+    print("\n" + "=" * 70)
+    print("EXPLANATIONS COMPLETE")
+    print("=" * 70)
+    print(f"Rows written:      {len(final_rows):,}")
+    print(f"Uploaded to HF:    {hf_repo}/{HF_EXPLANATION_OUTPUT_PATH}")
 
-results_to_explain = (
-    results_df
-    .sort_values([sort_col, "risk_score"], ascending=[False, False])
-    .head(MAX_CUSTOMERS_PER_RUN)
-    .copy()
-)
-
-print(f"Explaining {len(results_to_explain)} customers "
-      f"({results_to_explain[sort_col].sum()} flagged, "
-      f"{(results_to_explain[sort_col]==0).sum()} not flagged)\n")
-
-explanations = []
-errors       = []
-
-# Local checkpoint path (saved after every customer)
-LOCAL_CHECKPOINT_PATH = Path("./model_output_explanations_checkpoint.csv")
-
-for i, (_, row) in enumerate(results_to_explain.iterrows(), 1):
-    customer_id   = row["customer_id"]
-    risk_score    = row["risk_score"]
-    prediction    = row[sort_col]
-
-    customer_features = df[df["customer_id"] == customer_id]
-
-    if MODEL_BACKEND == "local_llm":
-        risk_category = isolation_df.loc[customer_id, "risk_category"] if customer_id in isolation_df.index else "Unknown"
-    else:
-        risk_category = row["risk_category"]
-
-    if customer_features.empty:
-        feature_notes = "Detailed feature breakdown unavailable for this customer."
-    else:
-        feature_notes = extract_notable_features(customer_features.iloc[0])
-
-    user_prompt = build_user_prompt(
-        customer_id, risk_score, risk_category, prediction, feature_notes
-    )
-
-    print(f"[{i}/{len(results_to_explain)}] Customer {customer_id} | "
-          f"{'FLAGGED' if prediction==1 else 'CLEAN':7s} | {risk_category} risk", end=" ... ")
-
-    explanation_text = call_llm(SYSTEM_PROMPT, user_prompt)
-
-    if explanation_text.startswith("[ERROR"):
-        errors.append({"customer_id": customer_id, "error": explanation_text})
-        print(f"FAILED — {explanation_text}")
-    else:
-        print("OK")
-
-    explanations.append({
-        "customer_id":   customer_id,
-        "risk_score":    round(risk_score, 4),
-        "risk_category": risk_category,
-        "flagged":       bool(prediction),
-        "explanation":   explanation_text
-    })
-
-    # Save checkpoint to local disk after every customer
-    pd.DataFrame(explanations).to_csv(LOCAL_CHECKPOINT_PATH, index=False)
-
-    # Gemini-only rate limit pause
-    if MODEL_BACKEND == "gemini" and i < len(results_to_explain):
-        time.sleep(SECONDS_BETWEEN_CALLS)
+    if final_rows:
+        print("\nSample rows:")
+        for row in final_rows[:3]:
+            print(f"  {row['customer_id']}: {row['explanation'][:140]}")
 
 
-# ==============================================================================
-# BLOCK 9 — UPLOAD OUTPUT TO HF (replaces GDrive save)
-# ==============================================================================
-
-explanations_df = pd.DataFrame(explanations)
-
-# Save final CSV locally first, then upload to HF
-LOCAL_OUTPUT_PATH = Path("./model_output_explanations.csv")
-explanations_df.to_csv(LOCAL_OUTPUT_PATH, index=False)
-
-api = HfApi()
-api.upload_file(
-    path_or_fileobj=str(LOCAL_OUTPUT_PATH),
-    path_in_repo=HF_EXPLANATION_OUTPUT_PATH,
-    repo_id=HF_DATASET_REPO,
-    repo_type="dataset",
-    token=HF_TOKEN,
-)
-
-print(f"\n{'='*70}")
-print(f"EXPLANATIONS COMPLETE")
-print(f"{'='*70}")
-print(f"  Total explained : {len(explanations_df)}")
-if not explanations_df.empty:
-    print(f"  Flagged         : {explanations_df['flagged'].sum()}")
-    print(f"  Not flagged     : {(~explanations_df['flagged']).sum()}")
-else:
-    print(f"  (No explanations generated — check errors above)")
-print(f"  Errors          : {len(errors)}")
-print(f"  Uploaded to HF  : {HF_DATASET_REPO}/{HF_EXPLANATION_OUTPUT_PATH}")
-
-if errors:
-    print(f"\n  Failed customers: {[e['customer_id'] for e in errors]}")
-
-
-# ==============================================================================
-# BLOCK 10 — PREVIEW (Top 3 Explanations)
-# ==============================================================================
-
-print(f"\n{'='*70}")
-print("SAMPLE EXPLANATIONS (Top 3 by Risk Score)")
-print(f"{'='*70}")
-
-for _, row in explanations_df.head(3).iterrows():
-    print(f"\nCustomer: {row['customer_id']}  |  Risk: {row['risk_category']}  "
-          f"|  Flagged: {row['flagged']}")
-    print("-" * 60)
-    print(row["explanation"])
-    print()
+if __name__ == "__main__":
+    main()

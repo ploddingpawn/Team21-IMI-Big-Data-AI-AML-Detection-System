@@ -40,7 +40,7 @@ Fallback Score = (1.0 - coverage) × IF_Score_Weighted
 ## Pillar 3: KMeans Behavioral Peer-Grouping
 **Weight: 30%**
 
-We had another glaring problem - the Isolation Forest model could be (and likely is) skewed by massive dataset outliers. This pillar provides "relative severity". KMeans allows us to group similar customers into behavioral cohorts, determining how severely anomalous a customer is compared strictly to people who act like them.
+This pillar provides "relative severity". KMeans allows us to group similar customers into behavioral cohorts, determining how severely anomalous a customer is compared strictly to people who act like them. IF score distributions are heavily right-skewed across 61K customers — most customers score near zero with a long anomalous tail. Feeding raw scores into K-means would cause cluster geometry to degenerate into one large low-risk blob. RobustScaler flattens this distribution so K-means finds meaningful substructure across the full population rather than just identifying extreme outliers
 
 ### 1. Robust Scaled Feature Space
 We feed all 61,000 customers into the KMeans algorithm using *only* their 5 pure Isolation Forest anomaly probabilities. Because anomalies are highly left-skewed, we need to aggressively flatten them using a `RobustScaler()` (using the Interquartile Range rather than strict variance). This prevents ultra-anomalies from dragging cluster centroids artificially outward.

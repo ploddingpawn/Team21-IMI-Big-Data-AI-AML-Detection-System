@@ -1472,12 +1472,24 @@ def main():
     )
     
     # ── Save to Hugging Face ───────────────────────────────────────────────
+    high_risk_evidence = (
+        hybrid[[c for c in evidence_cols if c in hybrid.columns]]
+        [hybrid["final_hybrid_score"] > 0.60]
+        .copy()
+    )
+    if "rule_indicator_trace" not in high_risk_evidence.columns and "rule_indicator_trace" in df_features.columns:
+        high_risk_evidence = high_risk_evidence.merge(
+            df_features[["customer_id", "rule_indicator_trace"]],
+            on="customer_id",
+            how="left",
+        )
+
     api = HfApi()
     output_files = {
         "results.csv": results,
         "hybrid_model_results.csv": hybrid,
         "hybrid_model_high_risk.csv": hybrid[hybrid["final_hybrid_score"] > 0.60],
-        "high_risk_evidence.csv": hybrid[[c for c in evidence_cols if c in hybrid.columns]][hybrid["final_hybrid_score"] > 0.60],
+        "high_risk_evidence.csv": high_risk_evidence,
         "cluster_typology_profile.csv": cluster_summary,
     }
 

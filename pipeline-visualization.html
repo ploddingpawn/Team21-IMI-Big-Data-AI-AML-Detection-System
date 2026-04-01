@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AML Detection Pipeline</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ─── Header ─── */
+  header {
+    background: linear-gradient(135deg, #1a2332 0%, #0d1117 100%);
+    border-bottom: 1px solid #21262d;
+    padding: 20px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header h1 { font-size: 1.25rem; font-weight: 600; color: #58a6ff; letter-spacing: 0.5px; }
+  header p  { font-size: 0.78rem; color: #8b949e; margin-top: 2px; }
+  .badge {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 0.72rem;
+    color: #8b949e;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .dot { width:8px; height:8px; border-radius:50%; background:#3fb950; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* ─── Main layout ─── */
+  main { padding: 40px; max-width: 1400px; margin: 0 auto; }
+
+  /* ─── Section labels ─── */
+  .section-label {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 2px;
+    text-transform: uppercase; color: #8b949e;
+    margin-bottom: 12px; margin-top: 36px;
+  }
+
+  /* ─── Pipeline row ─── */
+  .pipeline-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0;
+    position: relative;
+  }
+
+  /* connector lines between cards */
+  .pipeline-row::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 12.5%;
+    width: 75%;
+    height: 2px;
+    background: linear-gradient(90deg, #1f6feb44, #388bfd88, #388bfd88, #a371f7aa);
+    transform: translateY(-50%);
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  /* ─── Stage card ─── */
+  .stage {
+    position: relative;
+    z-index: 1;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 22px;
+    margin: 0 10px;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+  }
+  .stage:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+    border-color: var(--accent);
+  }
+  .stage.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+
+  .stage-num {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent-bg);
+    border: 2px solid var(--accent);
+    color: var(--accent);
+    font-size: 0.78rem; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 12px;
+  }
+  .stage-title { font-size: 0.92rem; font-weight: 600; color: #e6edf3; margin-bottom: 4px; }
+  .stage-file  { font-size: 0.7rem; color: #8b949e; font-family: 'Consolas', monospace; margin-bottom: 10px; }
+  .stage-desc  { font-size: 0.78rem; color: #8b949e; line-height: 1.5; }
+
+  .tag {
+    display: inline-block;
+    font-size: 0.65rem; font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    margin-top: 10px; margin-right: 4px;
+    background: var(--tag-bg);
+    color: var(--accent);
+    border: 1px solid var(--accent-dim);
+  }
+
+  /* colour themes */
+  .s1 { --accent:#58a6ff; --accent-bg:#1a2d4a; --accent-glow:#58a6ff33; --accent-dim:#1f6feb; --tag-bg:#1a2d4a; }
+  .s2 { --accent:#3fb950; --accent-bg:#1a3328; --accent-glow:#3fb95033; --accent-dim:#238636; --tag-bg:#1a3328; }
+  .s3 { --accent:#e3b341; --accent-bg:#3a2a12; --accent-glow:#e3b34133; --accent-dim:#9e6a03; --tag-bg:#3a2a12; }
+  .s4 { --accent:#a371f7; --accent-bg:#2d1f4a; --accent-glow:#a371f733; --accent-dim:#6e40c9; --tag-bg:#2d1f4a; }
+
+  /* ─── Arrows between stages ─── */
+  .arrow {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.4rem; color: #30363d;
+    z-index: 2; position: relative;
+    margin-top: -10px;
+  }
+
+  /* ─── Detail panel ─── */
+  #detail {
+    margin-top: 32px;
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 28px;
+    min-height: 80px;
+    transition: opacity 0.2s;
+  }
+  #detail h2 { font-size: 1rem; font-weight: 600; margin-bottom: 16px; color: #e6edf3; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .detail-col h3 { font-size: 0.72rem; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #8b949e; margin-bottom: 10px; }
+  .detail-col ul { list-style: none; }
+  .detail-col ul li {
+    font-size: 0.8rem; color: #c9d1d9; padding: 5px 0;
+    border-bottom: 1px solid #21262d;
+    display: flex; align-items: flex-start; gap: 8px; line-height: 1.4;
+  }
+  .detail-col ul li::before { content: '›'; color: #8b949e; flex-shrink:0; }
+  code { font-family: 'Consolas', monospace; font-size: 0.75rem; background: #0d1117; padding: 1px 5px; border-radius: 3px; color: #79c0ff; }
+
+  /* ─── Three-pillar section ─── */
+  .pillars {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 12px;
+  }
+  .pillar {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 18px;
+    position: relative;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .pillar:hover { border-color: var(--p-color); transform: translateY(-2px); }
+  .pillar-badge {
+    position: absolute; top: -1px; left: 18px;
+    font-size: 0.6rem; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; padding: 3px 10px;
+    border-radius: 0 0 8px 8px;
+    background: var(--p-color); color: #0d1117;
+  }
+  .pillar h3 { font-size: 0.88rem; font-weight: 600; margin-top: 14px; margin-bottom: 6px; color: var(--p-color); }
+  .pillar p  { font-size: 0.78rem; color: #8b949e; line-height: 1.5; }
+  .p1 { --p-color: #58a6ff; }
+  .p2 { --p-color: #e3b341; }
+  .p3 { --p-color: #3fb950; }
+
+  /* ─── Data flow diagram ─── */
+  .flow-grid {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr auto 1fr;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    overflow-x: auto;
+    padding: 12px 0;
+  }
+  .flow-node {
+    background: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-align: center;
+    font-size: 0.72rem;
+  }
+  .flow-node.source { border-color: #58a6ff88; }
+  .flow-node.out    { border-color: #3fb95088; }
+  .flow-node.llm    { border-color: #a371f788; }
+  .flow-arrow { color: #484f58; font-size: 1.2rem; text-align: center; }
+  .fn-title { font-size: 0.68rem; font-weight: 600; color: #e6edf3; }
+  .fn-sub   { font-size: 0.62rem; color: #8b949e; margin-top: 2px; }
+
+  /* ─── Tech stack ─── */
+  .tech-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+  .tech-card {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .tech-icon { font-size: 1.4rem; }
+  .tech-name { font-size: 0.8rem; font-weight: 600; color: #e6edf3; }
+  .tech-role { font-size: 0.65rem; color: #8b949e; }
+
+  /* ─── Risk tiers ─── */
+  .risk-row { display: flex; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+  .risk-chip {
+    flex: 1; min-width: 120px;
+    border-radius: 8px; padding: 12px 16px;
+    font-size: 0.78rem; font-weight: 600;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  .risk-chip span { font-size: 0.65rem; font-weight: 400; opacity: .7; }
+  .rc-critical { background:#3d1a1a; color:#f85149; border:1px solid #da3633; }
+  .rc-high     { background:#3a2a12; color:#e3b341; border:1px solid #9e6a03; }
+  .rc-medium   { background:#1a2d4a; color:#79c0ff; border:1px solid #1f6feb; }
+  .rc-low      { background:#1a3328; color:#56d364; border:1px solid #238636; }
+
+  /* ─── Output files ─── */
+  .output-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-top: 12px; }
+  .output-file {
+    background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
+    padding: 12px; font-size: 0.75rem;
+  }
+  .output-file .fname { color: #79c0ff; font-family: monospace; font-size: 0.72rem; word-break: break-all; }
+  .output-file .fdesc { color: #8b949e; font-size: 0.7rem; margin-top: 4px; }
+
+  /* ─── Responsive ─── */
+  @media (max-width: 900px) {
+    .pipeline-row { grid-template-columns: 1fr 1fr; }
+    .pipeline-row::after { display: none; }
+    .detail-grid, .pillars, .flow-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>IMI Big Data &amp; AI — AML Detection Pipeline</h1>
+    <p>End-to-end anti-money laundering detection and explanation system</p>
+  </div>
+  <div class="badge">
+    <span class="dot"></span>
+    4-Stage Python Pipeline &nbsp;·&nbsp; Hybrid ML + Rules + LLM
+  </div>
+</header>
+
+<main>
+
+  <!-- ══════════════════════ PIPELINE STAGES ══════════════════════ -->
+  <div class="section-label">Pipeline Stages — click any stage for details</div>
+
+  <div class="pipeline-row" id="pipeline-row">
+    <div class="stage s1" data-stage="1" onclick="showDetail(1)">
+      <div class="stage-num">01</div>
+      <div class="stage-title">Feature Engineering</div>
+      <div class="stage-file">01-feature-engineering.py</div>
+      <div class="stage-desc">
+        Downloads 7 raw transaction channel CSVs and KYC tables from Hugging Face.
+        Unifies all channels, joins KYC, builds 5 AML typology feature sets,
+        merges supervised labels, and uploads the enriched feature table.
+      </div>
+      <span class="tag">pandas</span>
+      <span class="tag">huggingface-hub</span>
+      <span class="tag">numpy</span>
+    </div>
+
+    <div class="stage s2" data-stage="2" onclick="showDetail(2)">
+      <div class="stage-num">02</div>
+      <div class="stage-title">Isolation Forest</div>
+      <div class="stage-file">02-isolation-forest.py</div>
+      <div class="stage-desc">
+        Trains 5 independent Isolation Forest models, each targeting one AML typology.
+        Outputs per-typology anomaly scores and persists model artifacts.
+        Validates against labels using ROC-AUC.
+      </div>
+      <span class="tag">scikit-learn</span>
+      <span class="tag">joblib</span>
+      <span class="tag">RobustScaler</span>
+    </div>
+
+    <div class="stage s3" data-stage="3" onclick="showDetail(3)">
+      <div class="stage-num">03</div>
+      <div class="stage-title">Hybrid Scoring &amp; Fusion</div>
+      <div class="stage-file">03-hybrid-model.py</div>
+      <div class="stage-desc">
+        Three-pillar fusion: rule-based hard flags × IF scores, dynamic weighting by
+        feature coverage, K-Means peer-group clustering. Produces a final unified
+        risk score and top-1% flagging.
+      </div>
+      <span class="tag">KMeans</span>
+      <span class="tag">Rule Engine</span>
+      <span class="tag">Score Fusion</span>
+    </div>
+
+    <div class="stage s4" data-stage="4" onclick="showDetail(4)">
+      <div class="stage-num">04</div>
+      <div class="stage-title">Narrative Explanation</div>
+      <div class="stage-file">04-explanation-model.py</div>
+      <div class="stage-desc">
+        Batched LLM (Gemini or local GGUF) reads high-risk evidence rows
+        and generates analyst-grade investigative narratives citing indicator IDs
+        and scoring rationale.
+      </div>
+      <span class="tag">Gemini API</span>
+      <span class="tag">llama-cpp</span>
+      <span class="tag">Batch LLM</span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ DETAIL PANEL ══════════════════════ -->
+  <div id="detail">
+    <p style="color:#484f58; font-size:0.82rem; text-align:center; padding:12px 0;">
+      ↑ Click a stage above to see its details
+    </p>
+  </div>
+
+  <!-- ══════════════════════ THREE-PILLAR MODEL ══════════════════════ -->
+  <div class="section-label">Stage 03 — Three-Pillar Hybrid Architecture</div>
+  <div class="pillars">
+    <div class="pillar p1">
+      <div class="pillar-badge">Pillar I</div>
+      <h3>Typology-Specific Isolation Forests</h3>
+      <p>
+        Five independent Isolation Forest models — each tuned to a distinct AML
+        typology (Structuring, Layering, Rapid Movement, Profile Mismatch,
+        High-Risk Geography). Per-model anomaly scores are fed into fusion weighted
+        by feature coverage: sparse profiles fall back to IF-only scores.
+      </p>
+    </div>
+    <div class="pillar p2">
+      <div class="pillar-badge">Pillar II</div>
+      <h3>Deterministic Rule-Based Flags</h3>
+      <p>
+        Vectorized hard checks enforce regulatory thresholds and industry limits.
+        Each triggered rule contributes a quantified signal. Rules are mapped to
+        indicator IDs (e.g., <code>STRUCT-003</code>, <code>ATYPICAL-007</code>)
+        which propagate into the final explanation.
+      </p>
+    </div>
+    <div class="pillar p3">
+      <div class="pillar-badge">Pillar III</div>
+      <h3>K-Means Peer-Group Clustering</h3>
+      <p>
+        K-Means clusters customers into behaviorally similar peer groups on the
+        normalized IF score space. Cluster tier becomes a secondary risk signal —
+        validated via silhouette score — contextualising outliers within their
+        peer cohort before final score normalization.
+      </p>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ DATA FLOW ══════════════════════ -->
+  <div class="section-label">End-to-End Data Flow</div>
+  <div class="flow-grid">
+    <div class="flow-node source">
+      <div class="fn-title">🗄 Hugging Face Dataset</div>
+      <div class="fn-sub">abm · card · cheque · eft · emt · wu · wire</div>
+      <div class="fn-sub">kyc · labels · codebooks</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="fn-title">⚙ Stage 01</div>
+      <div class="fn-sub">Feature Engineering</div>
+      <div class="fn-sub" style="color:#58a6ff;margin-top:4px">customer_features_enhanced.csv</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="fn-title">🌲 Stage 02</div>
+      <div class="fn-sub">Isolation Forest ×5</div>
+      <div class="fn-sub" style="color:#3fb950;margin-top:4px">isolation_forest_results.csv</div>
+      <div class="fn-sub" style="color:#3fb950">*.pkl artifacts</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node">
+      <div class="fn-title">🔀 Stage 03</div>
+      <div class="fn-sub">Hybrid Fusion</div>
+      <div class="fn-sub" style="color:#e3b341;margin-top:4px">results.csv</div>
+      <div class="fn-sub" style="color:#e3b341">high_risk_evidence.csv</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node llm">
+      <div class="fn-title">🤖 Stage 04</div>
+      <div class="fn-sub">LLM Narratives</div>
+      <div class="fn-sub" style="color:#a371f7;margin-top:4px">*_explanations.csv</div>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-node out">
+      <div class="fn-title">📤 HF Upload</div>
+      <div class="fn-sub">All outputs pushed back to dataset repo</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ RISK TIERS ══════════════════════ -->
+  <div class="section-label">Output Risk Categories</div>
+  <div class="risk-row">
+    <div class="risk-chip rc-critical">Critical <span>Top 1% · predicted_label = 1</span></div>
+    <div class="risk-chip rc-high">High <span>Score 0.65 – 0.89</span></div>
+    <div class="risk-chip rc-medium">Medium <span>Score 0.35 – 0.64</span></div>
+    <div class="risk-chip rc-low">Low <span>Score 0.00 – 0.34</span></div>
+  </div>
+
+  <!-- ══════════════════════ OUTPUT FILES ══════════════════════ -->
+  <div class="section-label">Key Output Artifacts</div>
+  <div class="output-grid">
+    <div class="output-file">
+      <div class="fname">customer_features_enhanced.csv</div>
+      <div class="fdesc">Unified customer-level feature table with 5 typology feature sets + labels</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">isolation_forest_results.csv</div>
+      <div class="fdesc">Raw per-typology IF anomaly scores for every customer</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">isolation_forest_high_risk.csv</div>
+      <div class="fdesc">IF-flagged high-risk subset for inspection</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">isolation_forest_feature_sets.pkl</div>
+      <div class="fdesc">Persisted IF feature-set metadata (joblib)</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">results.csv</div>
+      <div class="fdesc">Final scored customer table with hybrid_risk_score, risk_category, predicted_label</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">hybrid_model_high_risk.csv</div>
+      <div class="fdesc">Top-risk subset with all score columns for audit</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">high_risk_evidence.csv</div>
+      <div class="fdesc">Score > 0.50 rows with indicator contributions — LLM input</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">cluster_typology_profile.csv</div>
+      <div class="fdesc">K-Means cluster-level typology risk profiles</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">kmeans_model.pkl / kmeans_k.pkl</div>
+      <div class="fdesc">Persisted KMeans model and optimal k (joblib)</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">gemini_output_explanations.csv</div>
+      <div class="fdesc">Analyst-grade LLM narratives per high-risk customer (Gemini)</div>
+    </div>
+    <div class="output-file">
+      <div class="fname">llama_output_explanations.csv</div>
+      <div class="fdesc">LLM narratives via local GGUF model backend</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════ TECH STACK ══════════════════════ -->
+  <div class="section-label">Technology Stack</div>
+  <div class="tech-grid">
+    <div class="tech-card"><span class="tech-icon">🐼</span><div><div class="tech-name">pandas</div><div class="tech-role">Data wrangling &amp; joins</div></div></div>
+    <div class="tech-card"><span class="tech-icon">🔢</span><div><div class="tech-name">numpy</div><div class="tech-role">Vectorised math</div></div></div>
+    <div class="tech-card"><span class="tech-icon">🌲</span><div><div class="tech-name">scikit-learn</div><div class="tech-role">IsolationForest, KMeans, RobustScaler</div></div></div>
+    <div class="tech-card"><span class="tech-icon">💾</span><div><div class="tech-name">joblib</div><div class="tech-role">Model artifact persistence</div></div></div>
+    <div class="tech-card"><span class="tech-icon">🤗</span><div><div class="tech-name">huggingface-hub</div><div class="tech-role">Dataset I/O (download &amp; upload)</div></div></div>
+    <div class="tech-card"><span class="tech-icon">✨</span><div><div class="tech-name">Gemini API</div><div class="tech-role">LLM narrative generation</div></div></div>
+    <div class="tech-card"><span class="tech-icon">🦙</span><div><div class="tech-name">llama-cpp-python</div><div class="tech-role">Local GGUF inference backend</div></div></div>
+    <div class="tech-card"><span class="tech-icon">⚙</span><div><div class="tech-name">python-dotenv</div><div class="tech-role">Environment config (.env)</div></div></div>
+  </div>
+
+  <div style="margin-top: 48px; border-top: 1px solid #21262d; padding-top: 20px; text-align: center; font-size: 0.7rem; color: #484f58;">
+    IMI Big Data &amp; AI · AML Detection System · Pipeline Visualization
+  </div>
+
+</main>
+
+<script>
+  const details = {
+    1: {
+      title: "Stage 01 — Feature Engineering  ·  01-feature-engineering.py",
+      col1: {
+        heading: "Inputs",
+        items: [
+          "abm.csv — ABM / ATM transactions",
+          "card.csv — Card transactions",
+          "cheque.csv — Cheque transactions",
+          "eft.csv — Electronic Fund Transfers",
+          "emt.csv — E-Money Transfers",
+          "western_union.csv — Western Union remittances",
+          "wire.csv — Wire transfers",
+          "kyc_*.csv — Customer KYC tables",
+          "labels.csv — Supervised AML labels",
+          "Occupation & Industry codebooks"
+        ]
+      },
+      col2: {
+        heading: "Processing Steps",
+        items: [
+          "Download all files from HF via hf_hub_download()",
+          "Normalise and unify 7 channel schemas into a single transaction table",
+          "Join KYC attributes to transactions",
+          "Engineer 5 typology-specific feature sets:",
+          "  › Structuring (sub-threshold splitting)",
+          "  › Layering (complex chain routing)",
+          "  › Rapid Movement (velocity features)",
+          "  › Profile Mismatch (KYC deviation)",
+          "  › High-Risk Geography (country scores)",
+          "Merge supervised labels for later validation",
+          "Upload customer_features_enhanced.csv to HF"
+        ]
+      },
+      col3: {
+        heading: "Outputs",
+        items: [
+          "outputs/customer_features_enhanced.csv",
+          "Uploaded to HF_DATASET_REPO path",
+          "One row per customer_id",
+          "All 5 typology feature columns present",
+          "label column attached for ROC-AUC validation"
+        ]
+      }
+    },
+    2: {
+      title: "Stage 02 — Isolation Forest Training  ·  02-isolation-forest.py",
+      col1: {
+        heading: "Inputs",
+        items: [
+          "customer_features_enhanced.csv (from Stage 01)",
+          "5 typology feature sets defined internally",
+          "HF_FEATURES_PATH environment variable",
+          "labels column for post-hoc validation only"
+        ]
+      },
+      col2: {
+        heading: "Processing Steps",
+        items: [
+          "Load features from HF dataset",
+          "For each of 5 typologies:",
+          "  › Apply RobustScaler (outlier-robust normalisation)",
+          "  › Train IsolationForest (contamination=auto)",
+          "  › Compute anomaly scores per customer",
+          "Compute ROC-AUC vs labels (sanity check — NOT used for training)",
+          "Compute silhouette score on IF score vectors",
+          "Persist feature set metadata → isolation_forest_feature_sets.pkl",
+          "Persist score column list → isolation_forest_score_cols.pkl",
+          "Upload results CSVs to HF"
+        ]
+      },
+      col3: {
+        heading: "Outputs",
+        items: [
+          "outputs/isolation_forest_results.csv (all scores)",
+          "outputs/isolation_forest_high_risk.csv (top anomalies)",
+          "isolation_forest_feature_sets.pkl (joblib)",
+          "isolation_forest_score_cols.pkl (joblib)",
+          "All uploaded to HF_DATASET_REPO"
+        ]
+      }
+    },
+    3: {
+      title: "Stage 03 — Hybrid Scoring & Fusion  ·  03-hybrid-model.py",
+      col1: {
+        heading: "Inputs",
+        items: [
+          "customer_features_enhanced.csv (Stage 01)",
+          "isolation_forest_results.csv (Stage 02)",
+          "isolation_forest_feature_sets.pkl",
+          "isolation_forest_score_cols.pkl",
+          "Rule definitions coded inline (apply_rule_scores())",
+          "AML-indicator-DB.csv indicator catalogue"
+        ]
+      },
+      col2: {
+        heading: "Processing Steps",
+        items: [
+          "Pillar I: Load IF scores; apply dynamic weight by feature coverage",
+          "  › Low-coverage profiles → pure IF score",
+          "  › High-coverage profiles → IF × rule weight",
+          "Pillar II: Vectorised rule engine (apply_rule_scores)",
+          "  › Each rule maps to an indicator ID (e.g. STRUCT-003)",
+          "  › Quantified contribution tracked per indicator",
+          "Pillar III: K-Means clustering on normalised IF score space",
+          "  › k selected via silhouette; persisted as kmeans_k.pkl",
+          "  › Cluster tier added as secondary risk signal",
+          "Weighted score fusion across 3 pillars",
+          "Min-max normalise to [0, 1]",
+          "Assign risk categories (Critical / High / Medium / Low)",
+          "Flag top 1% as predicted_label = 1",
+          "Build high_risk_evidence rows (score > 0.50) for LLM"
+        ]
+      },
+      col3: {
+        heading: "Outputs",
+        items: [
+          "outputs/results.csv — final scored customer table",
+          "outputs/hybrid_model_results.csv — full hybrid detail",
+          "outputs/hybrid_model_high_risk.csv — top-risk subset",
+          "outputs/high_risk_evidence.csv — LLM input payload",
+          "outputs/cluster_typology_profile.csv — cluster profiles",
+          "kmeans_model.pkl + kmeans_k.pkl (joblib)",
+          "All uploaded to HF_DATASET_REPO"
+        ]
+      }
+    },
+    4: {
+      title: "Stage 04 — Narrative Explanation Engine  ·  04-explanation-model.py",
+      col1: {
+        heading: "Inputs",
+        items: [
+          "high_risk_evidence.csv (from Stage 03, score > 0.50)",
+          "MODEL_BACKEND env var: 'gemini' or 'local_llm'",
+          "GEMINI_API_KEY (if Gemini backend)",
+          "LOCAL_LLM_MODEL_PATH — path to GGUF model file",
+          "MAX_CUSTOMERS_PER_RUN — batch size cap",
+          "LLM_BATCH_SIZE — rows per LLM call"
+        ]
+      },
+      col2: {
+        heading: "Processing Steps",
+        items: [
+          "Download high_risk_evidence.csv from HF",
+          "Select up to MAX_CUSTOMERS_PER_RUN rows",
+          "Batch into groups of LLM_BATCH_SIZE",
+          "For each batch, build structured prompt with:",
+          "  › customer_id, hybrid_risk_score, risk_category",
+          "  › Per-indicator contributions (e.g. ATYPICAL-007: 0.23)",
+          "  › Typology-specific anomaly scores",
+          "Call Gemini API or llama-cpp local inference",
+          "Parse LLM response into structured CSV rows",
+          "Add logic-driven disclaimer for low-coverage profiles",
+          "Concatenate all batch results",
+          "Upload final explanations CSV to HF"
+        ]
+      },
+      col3: {
+        heading: "Outputs",
+        items: [
+          "outputs/gemini_output_explanations.csv (Gemini backend)",
+          "outputs/llama_output_explanations.csv (local backend)",
+          "Each row: customer_id + plain-language investigative narrative",
+          "Narratives cite indicator IDs and score rationale",
+          "Uploaded to HF_EXPLANATION_OUTPUT_PATH"
+        ]
+      }
+    }
+  };
+
+  let activeStage = null;
+
+  function showDetail(n) {
+    const d = details[n];
+    const panel = document.getElementById('detail');
+
+    // toggle off if same
+    if (activeStage === n) {
+      activeStage = null;
+      document.querySelectorAll('.stage').forEach(s => s.classList.remove('active'));
+      panel.innerHTML = `<p style="color:#484f58;font-size:0.82rem;text-align:center;padding:12px 0;">↑ Click a stage above to see its details</p>`;
+      return;
+    }
+
+    activeStage = n;
+    document.querySelectorAll('.stage').forEach(s => s.classList.remove('active'));
+    document.querySelector(`.stage[data-stage="${n}"]`).classList.add('active');
+
+    const li = (items) => items.map(i => `<li>${i}</li>`).join('');
+    panel.innerHTML = `
+      <h2>${d.title}</h2>
+      <div class="detail-grid">
+        <div class="detail-col">
+          <h3>${d.col1.heading}</h3>
+          <ul>${li(d.col1.items)}</ul>
+        </div>
+        <div class="detail-col">
+          <h3>${d.col2.heading}</h3>
+          <ul>${li(d.col2.items)}</ul>
+        </div>
+        <div class="detail-col">
+          <h3>${d.col3.heading}</h3>
+          <ul>${li(d.col3.items)}</ul>
+        </div>
+      </div>`;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // auto-open stage 1 on load
+  window.addEventListener('DOMContentLoaded', () => showDetail(1));
+</script>
+</body>
+</html>

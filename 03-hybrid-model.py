@@ -1514,7 +1514,7 @@ def main():
     # ── Save to Hugging Face ───────────────────────────────────────────────
     high_risk_evidence = (
         hybrid[[c for c in evidence_cols if c in hybrid.columns]]
-        [hybrid["final_hybrid_score"] > 0.60]
+        [hybrid["final_hybrid_score"] > 0.50]
         .copy()
     )
     if "rule_indicator_trace" not in high_risk_evidence.columns and "rule_indicator_trace" in df_features.columns:

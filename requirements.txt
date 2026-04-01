@@ -8,3 +8,5 @@ huggingface-hub
 google-generativeai      # Gemini backend (MODEL_BACKEND=gemini)
 llama-cpp-python         # Local LLM backend (MODEL_BACKEND=local_llm)
 python-dotenv            # Loads .env into environment variables
+scikit-learn             # Isolation Forest, KMeans clustering
+joblib                   # Persist trained IF models and scalers

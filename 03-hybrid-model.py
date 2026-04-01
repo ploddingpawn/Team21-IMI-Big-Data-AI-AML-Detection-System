@@ -78,8 +78,8 @@ IF_SCORE_COLS = [
     "if_score_human_trafficking",
 ]
 
-# Typology weights — reflect ROC-AUC from 02_isolation_forest.py validation.
-# Downweight cross_border_geo and human_trafficking due to data sparsity.
+# Typology weights — reflect relative feature richness.
+# cross_border_geo and human_trafficking downweighted due to data sparsity
 # Must sum to 1.0.
 TYPOLOGY_WEIGHTS = {
     "if_score_structuring_layering": 0.30,
@@ -1114,7 +1114,7 @@ def main():
     print(f"KMeans:   Behavioral peer-grouping on raw IF scores (thin-cluster safeguard > 200)")
     tw = {k.replace("if_score_", ""): v for k, v in TYPOLOGY_WEIGHTS.items()}
     print(f"Typology weights (IF layer): {tw}")
-    print("(FINTRAC/FinCEN thresholds grounded — weights reflect IF validation ROC-AUC)")
+    print("(FINTRAC/FinCEN thresholds grounded")
 
     # ── Load ───────────────────────────────────────────────────────────────
     print("\nLoading data from Hugging Face...")

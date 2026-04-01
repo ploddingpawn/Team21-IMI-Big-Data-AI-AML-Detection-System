@@ -19,8 +19,8 @@ The independent signals must be aggregated and interpreted:
 - **Customer-Level Weighted Score:** The distinct signals (anomaly scores, clustering tier, and rule triggers) are weighted and combined into a final, unified AML risk score per customer.
 - **Indicator Tracking & Contribution:** During the scoring stage, for each underlying technique, the system actively tracks all significant contributing indicators. Every driving factor is recorded alongside its associated red flag ID and its exact quantitative contribution to the final score.
 
-### 3. Natural Language Explanation Model
-For investigation and auditability, numerical scores and indicator information pulled from the database using its ID are translated into human-readable narratives:
+### 3. Automated Narrative Generation Engine
+For investigation and auditability, the finalized scores and tracking data are synthesized into professional, evidence-based narratives:
 
-- The system passes the extracted indicators, alongside their score contributions, into an LLM-based explanation engine.
-- The engine synthesizes a professional, plain-language summary that details exactly *why* a customer was flagged. The resulting explanation interprets the significance of the mathematical anomalies, explicitly citing the regulatory indicators and typologies that drove the decision.
+- **Contextual Data Ingestion:** The engine receives the unified risk scores and the associated indicator traces as a structured payload. This ensures the model bridges the gap between Layer 1 anomalies, Layer 2 regulatory flags, and Layer 3 peer-group context.
+- **Synthesized Investigative Summaries:** The engine interprets these mathematical signals to produce a plain-language explanation that leads with the dominant risk concern. It explicitly cites the mapped indicator IDs (e.g., ATYPICAL-007) and applies logic-driven disclaimers for low-coverage profiles, ensuring the final output is a defensible and transparent record of the model's decision-making process.

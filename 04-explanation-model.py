@@ -43,8 +43,9 @@ HF_DATASET_REPO = os.getenv("HF_DATASET_REPO")
 DEFAULT_HF_DATASET_REPO = "scotiabank-big-data-team/2026-scotiabank-imi-big-data-ai"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SECONDS_BETWEEN_CALLS = int(os.getenv("SECONDS_BETWEEN_CALLS", "5"))
-MAX_CUSTOMERS_PER_RUN = int(os.getenv("MAX_CUSTOMERS_PER_RUN", "1"))
+SECONDS_BETWEEN_CALLS = 10
+MAX_CUSTOMERS_PER_RUN = 600
+LLM_BATCH_SIZE = 300
 
 GGUF_LOCAL_PATH = os.getenv("GGUF_LOCAL_PATH", "./models/Llama-3.2-3B-Instruct-Q4_K_M.gguf")
 GGUF_HF_REPO = os.getenv("GGUF_HF_REPO", "bartowski/Llama-3.2-3B-Instruct-GGUF")
@@ -536,6 +537,7 @@ def main():
     print(f"HF evidence input:          {HF_HIGH_RISK_EVIDENCE_PATH}")
     print(f"HF explanation output:      {HF_EXPLANATION_OUTPUT_PATH}")
     print(f"Total customers this run:   {MAX_CUSTOMERS_PER_RUN}")
+    print(f"Customers per API call:     {LLM_BATCH_SIZE}")
     if MODEL_BACKEND == "gemini":
         print(f"Rate limit pause:           {SECONDS_BETWEEN_CALLS}s")
 
@@ -547,16 +549,17 @@ def main():
         evidence_df = evidence_df.sort_values("final_hybrid_score", ascending=False).reset_index(drop=True)
         if MAX_CUSTOMERS_PER_RUN > 0:
             evidence_df = evidence_df.head(MAX_CUSTOMERS_PER_RUN).copy()
+        batch_size = max(1, LLM_BATCH_SIZE)
         total_customers = len(evidence_df)
-        total_batches = 1 if total_customers > 0 else 0
-        print(f"\nCustomers queued: {total_customers:,}")
+        total_batches = (total_customers + batch_size - 1) // batch_size if total_customers > 0 else 0
+        print(f"\nCustomers queued: {total_customers:,} across {total_batches} batch(es)")
 
         final_rows = []
         errors = []
         local_checkpoint = Path("./model_output_explanations_checkpoint.csv")
 
-        for batch_index, start in enumerate(range(0, len(evidence_df), len(evidence_df) or 1), 1):
-            batch_df = evidence_df.iloc[start:start + len(evidence_df)].copy()
+        for batch_index, start in enumerate(range(0, len(evidence_df), batch_size), 1):
+            batch_df = evidence_df.iloc[start:start + batch_size].copy()
             expected_ids = batch_df["customer_id"].astype(str).tolist()
             payload = [build_input_record(row) for _, row in batch_df.iterrows()]
             user_message = json.dumps(payload, ensure_ascii=False)
